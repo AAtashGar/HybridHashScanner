@@ -33,12 +33,16 @@ def get_user_input():
     misp_key = input("MISP API Key: ")
     otx_key = input("OTX API Key: ")
     vt_keys = input("VirusTotal API Keys (comma-separated if multiple): ")
+    kaspersky_key = input("Kaspersky API Key: ")
+    hybrid_key = input("Hybrid Analysis API Key: ")
     cache_db = input("SQLite cache database path (default: cache.db): ") or "cache.db"
     return {
         "misp_url": misp_url,
         "misp_key": misp_key,
         "otx_key": otx_key,
         "vt_keys": vt_keys.split(',') if vt_keys else [],
+        "kaspersky_key": kaspersky_key,
+        "hybrid_key": hybrid_key,
         "cache_db": cache_db
     }
 
@@ -152,6 +156,39 @@ def search_otx(hash_value, hash_type):
         print(f"Error searching OTX for {hash_value}: {e}")
         return None
 
+def search_hybrid_analysis(hash_value, hash_type):
+    """Search for the hash in Hybrid Analysis. Return result if found, else None."""
+    url = f"https://www.hybrid-analysis.com/api/v2/search/hash?hash={hash_value}"
+    headers = {
+        "api-key": HYBRID_ANALYSIS_API_KEY,
+        "User-Agent": "Falcon Sandbox"
+    }
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return None
+    except Exception as e:
+        print(f"Error searching Hybrid Analysis for {hash_value}: {e}")
+        return None
+
+def search_kaspersky(hash_value, hash_type):
+    """Search for the hash in Kaspersky Threat Intelligence Portal. Return result if found, else None."""
+    url = f"https://opentip.kaspersky.com/api/v1/search/hash?request={hash_value}"
+    headers = {
+        "x-api-key": KASPERSKY_API_KEY
+    }
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return None
+    except Exception as e:
+        print(f"Error searching Kaspersky for {hash_value}: {e}")
+        return None
+
 def search_virustotal(hash_value, hash_type):
     """Search for the hash in VirusTotal. Return result if found, else None."""
     if not VT_API_KEYS:
@@ -236,7 +273,29 @@ def process_hashes(hash_list, verbose=False):
             save_to_cache(hash_value, hash_type, otx_result)
             continue
         
-        # Search in VirusTotal if not in OTX
+        # Search in Hybrid Analysis if not in OTX
+        if verbose:
+            print(f"Searching in Hybrid Analysis...")
+        hybrid_result = search_hybrid_analysis(hash_value, hash_type)
+        if hybrid_result is not None:
+            if verbose:
+                print(f"Found in Hybrid Analysis")
+            results[hash_value] = hybrid_result
+            save_to_cache(hash_value, hash_type, hybrid_result)
+            continue
+        
+        # Search in Kaspersky if not in Hybrid Analysis
+        if verbose:
+            print(f"Searching in Kaspersky...")
+        kaspersky_result = search_kaspersky(hash_value, hash_type)
+        if kaspersky_result is not None:
+            if verbose:
+                print(f"Found in Kaspersky")
+            results[hash_value] = kaspersky_result
+            save_to_cache(hash_value, hash_type, kaspersky_result)
+            continue
+        
+        # Search in VirusTotal if not in Kaspersky
         if verbose:
             print(f"Searching in VirusTotal...")
         vt_result = search_virustotal(hash_value, hash_type)
@@ -264,6 +323,8 @@ if __name__ == "__main__":
         MISP_KEY = config['misp_key']
         OTX_API_KEY = config['otx_key']
         VT_API_KEYS = config['vt_keys']
+        KASPERSKY_API_KEY = config['kaspersky_key']
+        HYBRID_ANALYSIS_API_KEY = config['hybrid_key']
         CACHE_DB = config['cache_db']
 
         if args.hash and (args.directory or args.file_type):
