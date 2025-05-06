@@ -4,36 +4,99 @@ import json
 import os
 import requests
 import urllib3
+import argparse
+import glob
+import csv
+import re
+import random
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-# MISP settings (update these with your local MISP details)
-MISP_URL = 'YOUR MISP URL'  # Local MISP instance URL
-MISP_KEY = 'YOUR MISP API KEY'  # Replace with your MISP API key
 
-# OTX API Key (replace with your OTX API key)
-OTX_API_KEY = 'YOUR OTX API'
+CONFIG_FILE = 'config.json'
 
-# VirusTotal API Key (replace with your VirusTotal API key)
-VT_API_KEY = 'YOUR VIRUSTOTAL API'
+def load_config():
+    """Load configuration from file if it exists, otherwise return None."""
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r') as f:
+            return json.load(f)
+    return None
 
-# SQLite database path
-CACHE_DB = 'cache.db'
+def save_config(config):
+    """Save configuration to file."""
+    with open(CONFIG_FILE, 'w') as f:
+        json.dump(config, f, indent=4)
 
-# Connect to MISP
-misp = pymisp.PyMISP(MISP_URL, MISP_KEY, ssl=False)
+def get_user_input():
+    """Prompt user for configuration details."""
+    print("Please enter the following configuration details:")
+    misp_url = input("MISP URL (default: https://127.0.0.1/): ") or "https://localhost/"
+    misp_key = input("MISP API Key: ")
+    otx_key = input("OTX API Key: ")
+    vt_keys = input("VirusTotal API Keys (comma-separated if multiple): ")
+    cache_db = input("SQLite cache database path (default: cache.db): ") or "cache.db"
+    return {
+        "misp_url": misp_url,
+        "misp_key": misp_key,
+        "otx_key": otx_key,
+        "vt_keys": vt_keys.split(',') if vt_keys else [],
+        "cache_db": cache_db
+    }
 
-# Connect to SQLite and create cache table if it doesn't exist
-conn = sqlite3.connect(CACHE_DB)
-cursor = conn.cursor()
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS cache (
-        hash TEXT,
-        hash_type TEXT,
-        result TEXT,
-        PRIMARY KEY (hash, hash_type)
-    )
-''')
-conn.commit()
+def initialize_config():
+    """Check and initialize configuration if file doesn't exist."""
+    config = load_config()
+    if not config:
+        config = get_user_input()
+        save_config(config)
+    return config
+
+def detect_hash_type(hash_str):
+    """
+    Detect the type of hash based on its length and content.
+    Returns the hash type if recognized, otherwise 'unknown'.
+    """
+    hash_str = hash_str.strip()
+    if not hash_str:
+        return 'empty'
+    if not re.match(r'^[0-9a-fA-F]+$', hash_str):
+        return 'invalid'
+    length = len(hash_str)
+    if length == 32:
+        return 'md5'
+    elif length == 40:
+        return 'sha1'
+    elif length == 64:
+        return 'sha256'
+    elif length == 128:
+        return 'sha512'
+    else:
+        return 'unknown'
+
+def extract_hashes_from_directory(directory, file_type):
+    """
+    Extract hashes from files in the directory based on file_type.
+    Returns a list of (hash_value, hash_type) tuples.
+    """
+    pattern = '*.csv' if file_type == 'csv' else '*.txt'
+    files = glob.glob(os.path.join(directory, pattern))
+    hashes = []
+    for file in files:
+        with open(file, 'r', encoding='utf-8-sig') as f:
+            if file_type == 'csv':
+                reader = csv.reader(f)
+                next(reader, None)  # Skip header
+                for row in reader:
+                    for value in row:
+                        hash_type = detect_hash_type(value)
+                        if hash_type not in ['empty', 'invalid', 'unknown']:
+                            hashes.append((value, hash_type))
+            elif file_type == 'txt':
+                for line in f:
+                    hash_str = line.strip()
+                    hash_type = detect_hash_type(hash_str)
+                    if hash_type not in ['empty', 'invalid', 'unknown']:
+                        hashes.append((hash_str, hash_type))
+    return hashes
 
 def check_cache(hash_value, hash_type):
     """Check if the hash exists in the SQLite cache and return (found, result)."""
@@ -91,14 +154,19 @@ def search_otx(hash_value, hash_type):
 
 def search_virustotal(hash_value, hash_type):
     """Search for the hash in VirusTotal. Return result if found, else None."""
+    if not VT_API_KEYS:
+        print("No VirusTotal API keys provided.")
+        return None
+    vt_api_key = random.choice(VT_API_KEYS)
     url = f"https://www.virustotal.com/api/v3/files/{hash_value}"
     headers = {
-        "x-apikey": VT_API_KEY
+        "x-apikey": vt_api_key
     }
     try:
         response = requests.get(url, headers=headers)
         if response.status_code == 200:
-            return response.json()
+            result = response.json()
+            return result
         else:
             return None
     except Exception as e:
@@ -116,77 +184,130 @@ def save_to_json(results, filename='results.json'):
     with open(filename, 'w') as f:
         json.dump(results, f, indent=4)
 
-def process_hashes(hashes, hash_type='md5'):
-    """Process a list of hashes, checking cache first, then MISP, then CIRCL Hashlookup, then OTX, then VirusTotal."""
+def process_hashes(hash_list, verbose=False):
+    """Process a list of (hash_value, hash_type) tuples."""
     results = {}
-    for hash_value in hashes:
+    for hash_value, hash_type in hash_list:
         hash_value = hash_value.strip()
         if not hash_value:
             continue
         
+        if verbose:
+            print(f"Processing {hash_value} ({hash_type})")
+        
         # Check cache first
         in_cache, cached_result = check_cache(hash_value, hash_type)
         if in_cache:
+            if verbose:
+                print(f"Found in cache")
             results[hash_value] = cached_result
-            print(f"Found {hash_value} in cache: {cached_result}")
             continue
         
         # Search in MISP if not in cache
-        print(f"Searching {hash_value} in MISP...")
+        if verbose:
+            print(f"Searching in MISP...")
         misp_result = search_misp(hash_value, hash_type)
         if misp_result is not None:
+            if verbose:
+                print(f"Found in MISP")
             results[hash_value] = misp_result
             save_to_cache(hash_value, hash_type, misp_result)
             continue
         
         # Search in CIRCL Hashlookup if not in MISP
-        print(f"Searching {hash_value} in CIRCL Hashlookup...")
+        if verbose:
+            print(f"Searching in CIRCL Hashlookup...")
         circl_result = search_circl_hashlookup(hash_value, hash_type)
         if circl_result is not None:
+            if verbose:
+                print(f"Found in CIRCL Hashlookup")
             results[hash_value] = circl_result
             save_to_cache(hash_value, hash_type, circl_result)
             continue
         
         # Search in OTX if not in CIRCL Hashlookup
-        print(f"Searching {hash_value} in OTX...")
+        if verbose:
+            print(f"Searching in OTX...")
         otx_result = search_otx(hash_value, hash_type)
         if otx_result is not None:
+            if verbose:
+                print(f"Found in OTX")
             results[hash_value] = otx_result
             save_to_cache(hash_value, hash_type, otx_result)
             continue
         
         # Search in VirusTotal if not in OTX
-        print(f"Searching {hash_value} in VirusTotal...")
+        if verbose:
+            print(f"Searching in VirusTotal...")
         vt_result = search_virustotal(hash_value, hash_type)
         results[hash_value] = vt_result
         save_to_cache(hash_value, hash_type, vt_result)
+        if verbose:
+            print(f"Checked in VirusTotal")
     
-    # Save all results to JSON
-    save_to_json(results)
     return results
 
-def get_user_input():
-    """Get hashes and optional hash type from the user."""
-    print("Enter hashes (comma-separated or a file path containing one hash per line):")
-    hashes_input = input().strip()
-    
-    if os.path.isfile(hashes_input):
-        with open(hashes_input, 'r') as f:
-            hashes = [line.strip() for line in f.readlines()]
-    else:
-        hashes = [h.strip() for h in hashes_input.split(',')]
-    
-    hash_type = input("Enter hash type (e.g., md5, sha1, sha256) [optional, default is md5]: ").strip() or 'md5'
-    return hashes, hash_type
-
-# Main execution
 if __name__ == "__main__":
     try:
-        hashes, hash_type = get_user_input()
-        print(f"Processing {len(hashes)} hashes with type {hash_type}...")
-        results = process_hashes(hashes, hash_type)
-        print("Results saved to 'results.json' and cached in 'cache.db'.")
+        parser = argparse.ArgumentParser(description="Check hashes against various threat intelligence services. Supports processing hashes from files in a directory or a single hash directly.")
+        parser.add_argument('-directory', help="Path to the directory containing files with hashes")
+        parser.add_argument('-file_type', choices=['csv', 'txt'], help="Type of files to process (csv or txt)")
+        parser.add_argument('-hash', help="A single hash to check directly")
+        parser.add_argument('-output', default='results.json', help="Output JSON file for results (default: results.json)")
+        parser.add_argument('-v', '--verbose', action='store_true', help="Enable verbose output")
+        args = parser.parse_args()
+
+        # Load or initialize configuration
+        config = initialize_config()
+
+        MISP_URL = config['misp_url']
+        MISP_KEY = config['misp_key']
+        OTX_API_KEY = config['otx_key']
+        VT_API_KEYS = config['vt_keys']
+        CACHE_DB = config['cache_db']
+
+        if args.hash and (args.directory or args.file_type):
+            print("Error: Cannot provide both -hash and -directory/-file_type")
+            exit(1)
+        elif args.hash:
+            hash_value = args.hash
+            hash_type = detect_hash_type(hash_value)
+            if hash_type in ['empty', 'invalid', 'unknown']:
+                print(f"Invalid hash: {hash_value}")
+                exit(1)
+            hash_list = [(hash_value, hash_type)]
+        elif args.directory and args.file_type:
+            hash_list = extract_hashes_from_directory(args.directory, args.file_type)
+            if not hash_list:
+                print("No valid hashes found in the directory.")
+                exit(0)
+        else:
+            print("Error: Provide either -hash or both -directory and -file_type")
+            parser.print_help()
+            exit(1)
+
+        # Connect to MISP
+        misp = pymisp.PyMISP(MISP_URL, MISP_KEY, ssl=False)
+
+        # Connect to SQLite and create cache table if it doesn't exist
+        conn = sqlite3.connect(CACHE_DB)
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS cache (
+                hash TEXT,
+                hash_type TEXT,
+                result TEXT,
+                PRIMARY KEY (hash, hash_type)
+            )
+        ''')
+        conn.commit()
+
+        print(f"Processing {len(hash_list)} hash(es)...")
+        results = process_hashes(hash_list, args.verbose)
+        save_to_json(results, args.output)
+        print(f"Results saved to '{args.output}' and cached in '{CACHE_DB}'.")
     except Exception as e:
         print(f"An error occurred: {e}")
     finally:
-        conn.close()  # Close the database connection
+        if 'conn' in locals():
+            conn.close()  # Close the database connection
