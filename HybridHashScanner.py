@@ -5,8 +5,11 @@ import os
 import requests
 
 # MISP settings (update these with your local MISP details)
-MISP_URL = 'Your LOCAL MISP URL'  # Local MISP instance URL
+MISP_URL = 'YOUR LOCAL MISP URL'  # Local MISP instance URL
 MISP_KEY = 'YOUR LOCAL MISP API KEY'  # Replace with your MISP API key
+
+# OTX API Key (replace with your OTX API key)
+OTX_API_KEY = 'YOUR OTX API KEY'
 
 # SQLite database path
 CACHE_DB = 'cache.db'
@@ -28,22 +31,28 @@ cursor.execute('''
 conn.commit()
 
 def check_cache(hash_value, hash_type):
-    """Check if the hash exists in the SQLite cache."""
+    """Check if the hash exists in the SQLite cache and return (found, result)."""
     cursor.execute('SELECT result FROM cache WHERE hash = ? AND hash_type = ?', (hash_value, hash_type))
-    result = cursor.fetchone()
-    return json.loads(result[0]) if result else None
+    row = cursor.fetchone()
+    if row is not None:
+        return True, json.loads(row[0])
+    else:
+        return False, None
 
 def search_misp(hash_value, hash_type):
-    """Search for the hash in MISP."""
+    """Search for the hash in MISP. Return attributes if found, else None."""
     try:
         search_result = misp.search(controller='attributes', value=hash_value, type_attribute=hash_type)
-        return search_result['Attribute'] if search_result and 'Attribute' in search_result else None
+        if search_result and 'Attribute' in search_result:
+            attributes = search_result['Attribute']
+            return attributes if attributes else None
+        return None
     except Exception as e:
         print(f"Error searching MISP for {hash_value}: {e}")
         return None
 
 def search_circl_hashlookup(hash_value, hash_type):
-    """Search for the hash in CIRCL Hashlookup."""
+    """Search for the hash in CIRCL Hashlookup. Return result if found, else None."""
     url = f"https://hashlookup.circl.lu/lookup/{hash_type}/{hash_value}"
     try:
         response = requests.get(url)
@@ -53,6 +62,26 @@ def search_circl_hashlookup(hash_value, hash_type):
             return None
     except Exception as e:
         print(f"Error searching CIRCL Hashlookup for {hash_value}: {e}")
+        return None
+
+def search_otx(hash_value, hash_type):
+    """Search for the hash in OTX. Return result if found, else None."""
+    url = f"https://otx.alienvault.com/api/v1/indicators/file/{hash_value}"
+    headers = {
+        "X-OTX-API-KEY": OTX_API_KEY
+    }
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('pulse_info', {}).get('count', 0) > 0:
+                return data
+            else:
+                return None
+        else:
+            return None
+    except Exception as e:
+        print(f"Error searching OTX for {hash_value}: {e}")
         return None
 
 def save_to_cache(hash_value, hash_type, result):
@@ -66,8 +95,8 @@ def save_to_json(results, filename='results.json'):
     with open(filename, 'w') as f:
         json.dump(results, f, indent=4)
 
-def process_hashes(hashes, hash_type):
-    """Process a list of hashes, checking cache first, then MISP, then CIRCL Hashlookup."""
+def process_hashes(hashes, hash_type='md5'):
+    """Process a list of hashes, checking cache first, then MISP, then CIRCL Hashlookup, then OTX."""
     results = {}
     for hash_value in hashes:
         hash_value = hash_value.strip()
@@ -75,16 +104,16 @@ def process_hashes(hashes, hash_type):
             continue
         
         # Check cache first
-        cached_result = check_cache(hash_value, hash_type)
-        if cached_result is not None:
+        in_cache, cached_result = check_cache(hash_value, hash_type)
+        if in_cache:
             results[hash_value] = cached_result
-            print(f"Found {hash_value} in cache")
+            print(f"Found {hash_value} in cache: {cached_result}")
             continue
         
         # Search in MISP if not in cache
         print(f"Searching {hash_value} in MISP...")
         misp_result = search_misp(hash_value, hash_type)
-        if misp_result:
+        if misp_result is not None:
             results[hash_value] = misp_result
             save_to_cache(hash_value, hash_type, misp_result)
             continue
@@ -92,12 +121,16 @@ def process_hashes(hashes, hash_type):
         # Search in CIRCL Hashlookup if not in MISP
         print(f"Searching {hash_value} in CIRCL Hashlookup...")
         circl_result = search_circl_hashlookup(hash_value, hash_type)
-        if circl_result:
+        if circl_result is not None:
             results[hash_value] = circl_result
             save_to_cache(hash_value, hash_type, circl_result)
-        else:
-            results[hash_value] = None
-            save_to_cache(hash_value, hash_type, None)
+            continue
+        
+        # Search in OTX if not in CIRCL Hashlookup
+        print(f"Searching {hash_value} in OTX...")
+        otx_result = search_otx(hash_value, hash_type)
+        results[hash_value] = otx_result
+        save_to_cache(hash_value, hash_type, otx_result)
     
     # Save all results to JSON
     save_to_json(results)
