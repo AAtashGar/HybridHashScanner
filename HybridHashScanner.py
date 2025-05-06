@@ -3,13 +3,18 @@ import sqlite3
 import json
 import os
 import requests
+import urllib3
 
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # MISP settings (update these with your local MISP details)
-MISP_URL = 'YOUR LOCAL MISP URL'  # Local MISP instance URL
-MISP_KEY = 'YOUR LOCAL MISP API KEY'  # Replace with your MISP API key
+MISP_URL = 'YOUR MISP URL'  # Local MISP instance URL
+MISP_KEY = 'YOUR MISP API KEY'  # Replace with your MISP API key
 
 # OTX API Key (replace with your OTX API key)
-OTX_API_KEY = 'YOUR OTX API KEY'
+OTX_API_KEY = 'YOUR OTX API'
+
+# VirusTotal API Key (replace with your VirusTotal API key)
+VT_API_KEY = 'YOUR VIRUSTOTAL API'
 
 # SQLite database path
 CACHE_DB = 'cache.db'
@@ -84,6 +89,22 @@ def search_otx(hash_value, hash_type):
         print(f"Error searching OTX for {hash_value}: {e}")
         return None
 
+def search_virustotal(hash_value, hash_type):
+    """Search for the hash in VirusTotal. Return result if found, else None."""
+    url = f"https://www.virustotal.com/api/v3/files/{hash_value}"
+    headers = {
+        "x-apikey": VT_API_KEY
+    }
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return None
+    except Exception as e:
+        print(f"Error searching VirusTotal for {hash_value}: {e}")
+        return None
+
 def save_to_cache(hash_value, hash_type, result):
     """Save the result to the SQLite cache."""
     cursor.execute('INSERT OR REPLACE INTO cache (hash, hash_type, result) VALUES (?, ?, ?)',
@@ -96,7 +117,7 @@ def save_to_json(results, filename='results.json'):
         json.dump(results, f, indent=4)
 
 def process_hashes(hashes, hash_type='md5'):
-    """Process a list of hashes, checking cache first, then MISP, then CIRCL Hashlookup, then OTX."""
+    """Process a list of hashes, checking cache first, then MISP, then CIRCL Hashlookup, then OTX, then VirusTotal."""
     results = {}
     for hash_value in hashes:
         hash_value = hash_value.strip()
@@ -129,8 +150,16 @@ def process_hashes(hashes, hash_type='md5'):
         # Search in OTX if not in CIRCL Hashlookup
         print(f"Searching {hash_value} in OTX...")
         otx_result = search_otx(hash_value, hash_type)
-        results[hash_value] = otx_result
-        save_to_cache(hash_value, hash_type, otx_result)
+        if otx_result is not None:
+            results[hash_value] = otx_result
+            save_to_cache(hash_value, hash_type, otx_result)
+            continue
+        
+        # Search in VirusTotal if not in OTX
+        print(f"Searching {hash_value} in VirusTotal...")
+        vt_result = search_virustotal(hash_value, hash_type)
+        results[hash_value] = vt_result
+        save_to_cache(hash_value, hash_type, vt_result)
     
     # Save all results to JSON
     save_to_json(results)
