@@ -2,10 +2,11 @@ import pymisp
 import sqlite3
 import json
 import os
+import requests
 
 # MISP settings (update these with your local MISP details)
-MISP_URL = 'https://192.168.85.128/'  # Local MISP instance URL
-MISP_KEY = 'az4QuQZ73pdy8naWjQE5YrrsbVTnExt2xHhjO1Nz'  # Replace with your MISP API key
+MISP_URL = 'Your LOCAL MISP URL'  # Local MISP instance URL
+MISP_KEY = 'YOUR LOCAL MISP API KEY'  # Replace with your MISP API key
 
 # SQLite database path
 CACHE_DB = 'cache.db'
@@ -41,6 +42,19 @@ def search_misp(hash_value, hash_type):
         print(f"Error searching MISP for {hash_value}: {e}")
         return None
 
+def search_circl_hashlookup(hash_value, hash_type):
+    """Search for the hash in CIRCL Hashlookup."""
+    url = f"https://hashlookup.circl.lu/lookup/{hash_type}/{hash_value}"
+    try:
+        response = requests.get(url)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return None
+    except Exception as e:
+        print(f"Error searching CIRCL Hashlookup for {hash_value}: {e}")
+        return None
+
 def save_to_cache(hash_value, hash_type, result):
     """Save the result to the SQLite cache."""
     cursor.execute('INSERT OR REPLACE INTO cache (hash, hash_type, result) VALUES (?, ?, ?)',
@@ -52,8 +66,8 @@ def save_to_json(results, filename='results.json'):
     with open(filename, 'w') as f:
         json.dump(results, f, indent=4)
 
-def process_hashes(hashes, hash_type='md5'):
-    """Process a list of hashes, checking cache first, then MISP."""
+def process_hashes(hashes, hash_type):
+    """Process a list of hashes, checking cache first, then MISP, then CIRCL Hashlookup."""
     results = {}
     for hash_value in hashes:
         hash_value = hash_value.strip()
@@ -70,10 +84,20 @@ def process_hashes(hashes, hash_type='md5'):
         # Search in MISP if not in cache
         print(f"Searching {hash_value} in MISP...")
         misp_result = search_misp(hash_value, hash_type)
-        results[hash_value] = misp_result
+        if misp_result:
+            results[hash_value] = misp_result
+            save_to_cache(hash_value, hash_type, misp_result)
+            continue
         
-        # Save to cache
-        save_to_cache(hash_value, hash_type, misp_result)
+        # Search in CIRCL Hashlookup if not in MISP
+        print(f"Searching {hash_value} in CIRCL Hashlookup...")
+        circl_result = search_circl_hashlookup(hash_value, hash_type)
+        if circl_result:
+            results[hash_value] = circl_result
+            save_to_cache(hash_value, hash_type, circl_result)
+        else:
+            results[hash_value] = None
+            save_to_cache(hash_value, hash_type, None)
     
     # Save all results to JSON
     save_to_json(results)
