@@ -1,0 +1,11 @@
+{
+    "misp_url": "YOUR MISP URL",
+    "misp_key": "YOUR MISP API",
+    "otx_key": "YOUR OTX API",
+    "vt_keys": [
+        "YOUR VIRUSTOTAL API'"
+    ],
+    "kaspersky_key": "YOUR OPENTIP KASPER API",
+    "hybrid_key": "YOUR HYBRID API",
+    "cache_db": "PATH TO CACHE\\cache.db"
+}
