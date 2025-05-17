@@ -183,13 +183,17 @@ def search_hybrid_analysis(hash_value, hash_type):
         return None
 
 def search_kaspersky(hash_value, hash_type):
-    """Search for the hash in Kaspersky Threat Intelligence Portal. Return result if found, else None."""
+    """Search for the hash in Kaspersky Threat Intelligence Portal. Return result if not Clean, else None."""
     url = f"https://opentip.kaspersky.com/api/v1/search/hash?request={hash_value}"
     headers = {"x-api-key": KASPERSKY_API_KEY}
     try:
         response = requests.get(url, headers=headers)
         if response.status_code == 200:
-            return response.json()
+            result = response.json()
+            file_status = result.get('FileGeneralInfo', {}).get('FileStatus')
+            if file_status and file_status != 'Clean':
+                return result
+            return None
         return None
     except Exception as e:
         print(f"Error searching Kaspersky for {hash_value}: {e}")
@@ -223,9 +227,10 @@ def otx_worker():
                     results_dict[hash_value] = cached_result
             else:
                 result = search_otx(hash_value, hash_type)
-                with results_lock:
-                    results_dict[hash_value] = result
-                save_to_cache(hash_value, hash_type, result)
+                if result is not None:
+                    with results_lock:
+                        results_dict[hash_value] = {'service': 'otx', 'result': result}
+                    save_to_cache(hash_value, hash_type, {'service': 'otx', 'result': result})
             otx_queue.task_done()
             time.sleep(3600 / 10000)  # 0.36 seconds delay for 10,000 requests per hour
         except Exception as e:
@@ -243,9 +248,10 @@ def hybrid_worker():
                     results_dict[hash_value] = cached_result
             else:
                 result = search_hybrid_analysis(hash_value, hash_type)
-                with results_lock:
-                    results_dict[hash_value] = result
-                save_to_cache(hash_value, hash_type, result)
+                if result is not None:
+                    with results_lock:
+                        results_dict[hash_value] = {'service': 'hybrid', 'result': result}
+                    save_to_cache(hash_value, hash_type, {'service': 'hybrid', 'result': result})
             hybrid_queue.task_done()
             time.sleep(60 / 5)  # 12 seconds delay for 5 requests per minute
         except Exception as e:
@@ -263,9 +269,10 @@ def kaspersky_worker():
                     results_dict[hash_value] = cached_result
             else:
                 result = search_kaspersky(hash_value, hash_type)
-                with results_lock:
-                    results_dict[hash_value] = result
-                save_to_cache(hash_value, hash_type, result)
+                if result is not None:
+                    with results_lock:
+                        results_dict[hash_value] = {'service': 'kaspersky', 'result': result}
+                    save_to_cache(hash_value, hash_type, {'service': 'kaspersky', 'result': result})
             kaspersky_queue.task_done()
             time.sleep(60 / 1)  # 60 seconds delay for 1 request per minute
         except Exception as e:
@@ -283,9 +290,10 @@ def vt_worker():
                     results_dict[hash_value] = cached_result
             else:
                 result = search_virustotal(hash_value, hash_type)
-                with results_lock:
-                    results_dict[hash_value] = result
-                save_to_cache(hash_value, hash_type, result)
+                if result is not None:
+                    with results_lock:
+                        results_dict[hash_value] = {'service': 'virustotal', 'result': result}
+                    save_to_cache(hash_value, hash_type, {'service': 'virustotal', 'result': result})
             vt_queue.task_done()
             time.sleep(60 / 4)  # 15 seconds delay for 4 requests per minute
         except Exception as e:
@@ -293,7 +301,13 @@ def vt_worker():
             vt_queue.task_done()
 
 def process_hashes(hash_list, verbose=False):
-    """Process a list of (hash_value, hash_type) tuples using multithreading."""
+    """Process a list of (hash_value, hash_type) tuples based on selected service."""
+    services_to_search = []
+    if args.service == 'all':
+        services_to_search = ['misp', 'otx', 'hybrid', 'kaspersky', 'virustotal']
+    else:
+        services_to_search = [args.service]
+
     for hash_value, hash_type in hash_list:
         hash_value = hash_value.strip()
         if not hash_value:
@@ -302,7 +316,6 @@ def process_hashes(hash_list, verbose=False):
         if verbose:
             print(f"Processing {hash_value} ({hash_type})")
         
-        # Check cache for MISP and CIRCL which do not require rate limiting
         in_cache, cached_result = check_cache(hash_value, hash_type)
         if in_cache:
             if verbose:
@@ -311,41 +324,62 @@ def process_hashes(hash_list, verbose=False):
                 results_dict[hash_value] = cached_result
             continue
         
-        if verbose:
-            print(f"Searching in MISP...")
-        misp_result = search_misp(hash_value, hash_type)
-        if misp_result is not None:
-            if verbose:
-                print(f"Found in MISP")
-            with results_lock:
-                results_dict[hash_value] = misp_result
-            save_to_cache(hash_value, hash_type, misp_result)
-            continue
-        
-        if verbose:
-            print(f"Searching in CIRCL Hashlookup...")
-        circl_result = search_circl_hashlookup(hash_value, hash_type)
-        if circl_result is not None:
-            if verbose:
-                print(f"Found in CIRCL Hashlookup")
-            with results_lock:
-                results_dict[hash_value] = circl_result
-            save_to_cache(hash_value, hash_type, circl_result)
-            continue
-        
-        # Add to queues for rate-limited services
-        if verbose:
-            print(f"Adding to queues for OTX, Hybrid, Kaspersky, VirusTotal...")
-        otx_queue.put((hash_value, hash_type))
-        hybrid_queue.put((hash_value, hash_type))
-        kaspersky_queue.put((hash_value, hash_type))
-        vt_queue.put((hash_value, hash_type))
-
-    # Wait for all queues to be processed
-    otx_queue.join()
-    hybrid_queue.join()
-    kaspersky_queue.join()
-    vt_queue.join()
+        for service in services_to_search:
+            if service == 'misp':
+                if verbose:
+                    print(f"Searching in MISP...")
+                result = search_misp(hash_value, hash_type)
+                if result is not None:
+                    if verbose:
+                        print(f"Found in MISP")
+                    with results_lock:
+                        results_dict[hash_value] = {'service': 'misp', 'result': result}
+                    save_to_cache(hash_value, hash_type, {'service': 'misp', 'result': result})
+                    if args.service != 'all':
+                        break
+                if args.service == 'misp':
+                    break
+            
+            elif service == 'otx':
+                if verbose:
+                    print(f"Adding to OTX queue...")
+                otx_queue.put((hash_value, hash_type))
+                otx_queue.join()
+                if args.service == 'otx':
+                    break
+            
+            elif service == 'hybrid':
+                if verbose:
+                    print(f"Adding to Hybrid Analysis queue...")
+                hybrid_queue.put((hash_value, hash_type))
+                hybrid_queue.join()
+                if args.service == 'hybrid':
+                    break
+            
+            elif service == 'kaspersky':
+                if verbose:
+                    print(f"Adding to Kaspersky queue...")
+                kaspersky_queue.put((hash_value, hash_type))
+                kaspersky_queue.join()
+                if args.service == 'kaspersky':
+                    break
+            
+            elif service == 'virustotal':
+                if verbose:
+                    print(f"Adding to VirusTotal queue...")
+                vt_queue.put((hash_value, hash_type))
+                vt_queue.join()
+                if args.service == 'virustotal':
+                    break
+    
+    if 'otx' in services_to_search:
+        otx_queue.join()
+    if 'hybrid' in services_to_search:
+        hybrid_queue.join()
+    if 'kaspersky' in services_to_search:
+        kaspersky_queue.join()
+    if 'virustotal' in services_to_search:
+        vt_queue.join()
     
     return results_dict
 
@@ -362,6 +396,8 @@ if __name__ == "__main__":
         parser.add_argument('-hash', help="A single hash to check directly")
         parser.add_argument('-output', default='results.json', help="Output JSON file (default: results.json)")
         parser.add_argument('-v', '--verbose', action='store_true', help="Enable verbose output")
+        parser.add_argument('-service', choices=['misp', 'otx', 'hybrid', 'kaspersky', 'virustotal', 'all'], 
+                            default='all', help="Service to search the hash in (default: all)")
         args = parser.parse_args()
 
         config = initialize_config()
