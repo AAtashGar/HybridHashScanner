@@ -1,11 +1,8 @@
 {
-    "misp_url": "YOUR MISP URL",
-    "misp_key": "YOUR MISP API",
-    "otx_key": "YOUR OTX API",
-    "vt_keys": [
-        "YOUR VIRUSTOTAL API'"
-    ],
-    "kaspersky_key": "YOUR OPENTIP KASPER API",
-    "hybrid_key": "YOUR HYBRID API",
-    "cache_db": "PATH TO CACHE\\cache.db"
+  "misp_url": "https://127.0.0.1/",
+  "misp_key": "your_misp_key",
+  "otx_key": "your_otx_key",
+  "vt_keys": ["your_vt_key1", "your_vt_key2"],
+  "kaspersky_key": "your_kaspersky_key",
+  "cache_db": "cache.db"
 }
