@@ -279,16 +279,17 @@ def vt_worker():
             print(f"Error in VT worker for {hash_value}: {e}")
             vt_queue.task_done()
 
-def process_hashes(hash_list, verbose=False, two_phase=False):
+def process_hashes(hash_list, verbose=False, multi_phase=False):
     """Process a list of (hash_value, hash_type) tuples based on selected service."""
-    if two_phase:
-        initial_services = ['misp', 'hashlookup', 'otx', 'kaspersky']
+    if multi_phase:
+        # Phase 1: Check in MISP, Hashlookup, OTX
+        initial_services = ['misp', 'hashlookup', 'otx']
         for hash_value, hash_type in hash_list:
             hash_value = hash_value.strip()
             if not hash_value:
                 continue
             if verbose:
-                print(f"Processing {hash_value} ({hash_type})")
+                print(f"Processing {hash_value} ({hash_type}) in phase 1")
             cached_results = check_cache(hash_value, hash_type)
             for service in initial_services:
                 if service not in cached_results or cached_results[service] is None:
@@ -307,55 +308,97 @@ def process_hashes(hash_list, verbose=False, two_phase=False):
                     elif service == 'otx':
                         otx_queue.put((hash_value, hash_type))
                         print(f"Added {hash_value} to OTX queue")
-                    elif service == 'kaspersky':
-                        kaspersky_queue.put((hash_value, hash_type))
-                        print(f"Added {hash_value} to Kaspersky queue")
             save_to_cache(hash_value, hash_type, cached_results)
 
+        # Wait for OTX queue to finish
         print(f"OTX queue size before join: {otx_queue.qsize()}")
         print("Waiting for OTX queue to finish...")
         otx_queue.join()
         print("OTX queue finished!")
         print(f"OTX queue size after join: {otx_queue.qsize()}")
 
-        print(f"Kaspersky queue size before join: {kaspersky_queue.qsize()}")
-        print("Waiting for Kaspersky queue to finish...")
-        kaspersky_queue.join()
-        print("Kaspersky queue finished!")
-        print(f"Kaspersky queue size after join: {kaspersky_queue.qsize()}")
-
-        unfound_hashes = []
+        # Identify hashes not found in phase 1
+        unfound_phase1 = []
         for hash_value, hash_type in hash_list:
             cached_results = check_cache(hash_value, hash_type)
             if all(cached_results.get(service) is None for service in initial_services):
-                unfound_hashes.append((hash_value, hash_type))
+                unfound_phase1.append((hash_value, hash_type))
 
         total_hashes = len(hash_list)
         found_in_misp = sum(1 for (h, t) in hash_list if check_cache(h, t).get('misp') is not None)
         found_in_hashlookup = sum(1 for (h, t) in hash_list if check_cache(h, t).get('hashlookup') is not None)
         found_in_otx = sum(1 for (h, t) in hash_list if check_cache(h, t).get('otx') is not None)
-        found_in_kaspersky = sum(1 for (h, t) in hash_list if check_cache(h, t).get('kaspersky') is not None)
-        not_found = len(unfound_hashes)
+        not_found_phase1 = len(unfound_phase1)
 
-        print(f"\nProcessed {total_hashes} hashes:")
+        print(f"\nProcessed {total_hashes} hashes in phase 1:")
         print(f"Found in MISP: {found_in_misp}")
         print(f"Found in CIRCL Hashlookup: {found_in_hashlookup}")
         print(f"Found in OTX: {found_in_otx}")
-        print(f"Found in Kaspersky: {found_in_kaspersky}")
-        print(f"Not found in any service: {not_found}")
+        print(f"Not found in any service (phase 1): {not_found_phase1}")
 
-        if not_found > 0:
-            answer = input(f"Do you want to check the {not_found} not found hashes in VirusTotal? (yes/no): ").strip().lower()
+        if not_found_phase1:
+            # Calculate estimated time for Kaspersky
+            N_kaspersky = len(unfound_phase1)
+            estimated_seconds_kaspersky = N_kaspersky * 60  # 1 request per minute
+            if estimated_seconds_kaspersky < 60:
+                estimated_time_str = f"{estimated_seconds_kaspersky} seconds"
+            elif estimated_seconds_kaspersky < 3600:
+                minutes = estimated_seconds_kaspersky // 60
+                seconds = estimated_seconds_kaspersky % 60
+                estimated_time_str = f"{minutes} minutes {seconds} seconds"
+            else:
+                hours = estimated_seconds_kaspersky // 3600
+                minutes = (estimated_seconds_kaspersky % 3600) // 60
+                estimated_time_str = f"{hours} hours {minutes} minutes"
+            answer = input(f"Do you want to check the {not_found_phase1} not found hashes in OpenTIP Kaspersky? (yes/no): ").strip().lower()
             if answer == 'yes':
-                for hash_value, hash_type in unfound_hashes:
-                    vt_queue.put((hash_value, hash_type))
-                print(f"VT queue size before join: {vt_queue.qsize()}")
-                print("Waiting for VT queue to finish...")
-                vt_queue.join()
-                print("VT queue finished!")
-                print(f"VT queue size after join: {vt_queue.qsize()}")
+                print(f"Estimated time for Kaspersky search: {estimated_time_str}")
+                for hash_value, hash_type in unfound_phase1:
+                    kaspersky_queue.put((hash_value, hash_type))
+                print(f"Kaspersky queue size before join: {kaspersky_queue.qsize()}")
+                print("Waiting for Kaspersky queue to finish...")
+                kaspersky_queue.join()
+                print("Kaspersky queue finished!")
+                print(f"Kaspersky queue size after join: {kaspersky_queue.qsize()}")
+
+                # Identify hashes not found in Kaspersky
+                unfound_phase2 = []
+                for hash_value, hash_type in unfound_phase1:
+                    cached_results = check_cache(hash_value, hash_type)
+                    if cached_results.get('kaspersky') is None:
+                        unfound_phase2.append((hash_value, hash_type))
+
+                found_in_kaspersky = len(unfound_phase1) - len(unfound_phase2)
+                print(f"Found in Kaspersky: {found_in_kaspersky}")
+                print(f"Not found in Kaspersky: {len(unfound_phase2)}")
+
+                if unfound_phase2:
+                    # Calculate estimated time for VirusTotal
+                    N_vt = len(unfound_phase2)
+                    estimated_seconds_vt = N_vt * 15  # 4 requests per minute
+                    if estimated_seconds_vt < 60:
+                        estimated_time_str = f"{estimated_seconds_vt:.1f} seconds"
+                    elif estimated_seconds_vt < 3600:
+                        minutes = estimated_seconds_vt // 60
+                        seconds = estimated_seconds_vt % 60
+                        estimated_time_str = f"{minutes} minutes {seconds:.1f} seconds"
+                    else:
+                        hours = estimated_seconds_vt // 3600
+                        minutes = (estimated_seconds_vt % 3600) // 60
+                        estimated_time_str = f"{hours} hours {minutes} minutes"
+                    answer = input(f"Do you want to check the {len(unfound_phase2)} not found hashes in VirusTotal? (yes/no): ").strip().lower()
+                    if answer == 'yes':
+                        print(f"Estimated time for VirusTotal search: {estimated_time_str}")
+                        for hash_value, hash_type in unfound_phase2:
+                            vt_queue.put((hash_value, hash_type))
+                        print(f"VT queue size before join: {vt_queue.qsize()}")
+                        print("Waiting for VT queue to finish...")
+                        vt_queue.join()
+                        print("VT queue finished!")
+                        print(f"VT queue size after join: {vt_queue.qsize()}")
 
     else:
+        # Current logic for when multi_phase=False
         services_to_search = [args.service] if args.service != 'all' else ['misp', 'hashlookup', 'otx', 'kaspersky', 'virustotal']
         for hash_value, hash_type in hash_list:
             hash_value = hash_value.strip()
@@ -524,8 +567,8 @@ if __name__ == "__main__":
                 print(f"Estimated completion time: {hours} hours {minutes} minutes")
 
         print(f"Processing {len(hash_list)} hash(es)...")
-        two_phase = args.directory and args.file_type and args.service == 'all'
-        results = process_hashes(hash_list, args.verbose, two_phase=two_phase)
+        multi_phase = args.directory and args.file_type and args.service == 'all'
+        results = process_hashes(hash_list, args.verbose, multi_phase=multi_phase)
         save_to_json(results, args.output)
         print(f"Results saved to '{args.output}' and cached in '{CACHE_DB}'.")
 
