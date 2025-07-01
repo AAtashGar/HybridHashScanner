@@ -16,6 +16,9 @@ from tabulate import tabulate
 import shutil
 from pyfiglet import Figlet
 from colorama import init, Fore
+from stem import Signal
+from stem.control import Controller
+from stem.process import launch_tor_with_config
 
 # Disable insecure request warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -82,6 +85,10 @@ results_lock = threading.Lock()
 otx_worker_started = False
 vt_worker_started = False
 
+# Global variables for Tor
+tor_controller = None
+tor_process = None
+
 def load_config():
     """Load configuration from file if it exists, otherwise return None."""
     if os.path.exists(CONFIG_FILE):
@@ -103,13 +110,15 @@ def get_user_input():
     vt_keys = input("VirusTotal API Keys (comma-separated if multiple): ")
     kaspersky_key = input("Kaspersky API Key: ")
     cache_db = input("SQLite cache database path (default: cache.db): ") or "cache.db"
+    tor_path = input("Path to Tor executable (leave empty to use system PATH): ") or ""
     return {
         "misp_url": misp_url,
         "misp_key": misp_key,
         "otx_key": otx_key,
         "vt_keys": vt_keys.split(',') if vt_keys else [],
         "kaspersky_key": kaspersky_key,
-        "cache_db": cache_db
+        "cache_db": cache_db,
+        "tor_path": tor_path
     }
 
 def initialize_config():
@@ -290,8 +299,49 @@ def search_kaspersky(hash_value, hash_type, verbose=False):
             print(Fore.RED + f"[+] Error searching Kaspersky for {hash_value}: {e}" + Fore.RESET)
         return None
 
-def search_virustotal(hash_value, hash_type, verbose=False):
-    """Search for the hash in VirusTotal. Return result if found, else None."""
+def start_tor():
+    """Start a Tor instance."""
+    global tor_controller, tor_process
+    try:
+        print(f"[+] Using Tor path: {TOR_PATH}")
+        print("[+] Starting Tor...")
+        tor_config = {'SocksPort': '9150', 'ControlPort': '9151'}
+        if TOR_PATH:
+            tor_process = launch_tor_with_config(
+                config=tor_config,
+                tor_cmd=TOR_PATH,
+                take_ownership=True
+            )
+        else:
+            tor_process = launch_tor_with_config(
+                config=tor_config,
+                take_ownership=True
+            )
+        tor_controller = Controller.from_port(port=9151)
+        tor_controller.authenticate()
+        
+        while True:
+            progress = tor_controller.get_info("status/bootstrap-phase")
+            if "PROGRESS=100" in progress:
+                print("[+] Tor is fully bootstrapped!")
+                break
+            time.sleep(1)
+    except Exception as e:
+        print(f"[+] Error starting Tor: {e}")
+        tor_controller = None
+        tor_process = None
+
+def stop_tor():
+    """Stop the Tor instance."""
+    global tor_controller, tor_process
+    if tor_controller:
+        tor_controller.close()
+    if tor_process:
+        tor_process.terminate()
+        print("[+] Tor stopped.")
+
+def search_virustotal(hash_value, hash_type, verbose=False, use_tor=False):
+    """Search for the hash in VirusTotal with or without Tor, returning only specific fields."""
     if not VT_API_KEYS:
         if verbose:
             print(Fore.RED + "[+] No VirusTotal API keys provided." + Fore.RESET)
@@ -299,14 +349,23 @@ def search_virustotal(hash_value, hash_type, verbose=False):
     vt_api_key = random.choice(VT_API_KEYS)
     url = f"https://www.virustotal.com/api/v3/files/{hash_value}"
     headers = {"x-apikey": vt_api_key}
+    proxies = {'http': 'socks5://127.0.0.1:9150', 'https': 'socks5://127.0.0.1:9150'} if use_tor else None
+    
     try:
         if verbose:
-            print(Fore.BLUE + f"[+] Searching in VirusTotal for {hash_value}..." + Fore.RESET)
-        response = requests.get(url, headers=headers, timeout=10)
+            print(Fore.BLUE + f"[+] Searching in VirusTotal for {hash_value} {'via Tor' if use_tor else ''}..." + Fore.RESET)
+        response = requests.get(url, headers=headers, proxies=proxies, timeout=10)
         if response.status_code == 200:
             if verbose:
                 print(Fore.GREEN + f"[+] VirusTotal search done for {hash_value}" + Fore.RESET)
-            return response.json()
+            # Extract only last_analysis_stats, tags, and names
+            full_result = response.json()
+            filtered_result = {
+                "last_analysis_stats": full_result.get("data", {}).get("attributes", {}).get("last_analysis_stats", {}),
+                "tags": full_result.get("data", {}).get("attributes", {}).get("tags", []),
+                "names": full_result.get("data", {}).get("attributes", {}).get("names", [])
+            }
+            return filtered_result
         if verbose:
             print(Fore.GREEN + f"[+] VirusTotal search done for {hash_value}" + Fore.RESET)
         return None
@@ -477,12 +536,26 @@ def process_hashes(hash_list, verbose=False, mode='normal', vt_confirm=False):
             print(Fore.CYAN + f"[+] Found in {service}: {count}" + Fore.RESET)
         print(Fore.CYAN + f"[+] Not found: {len(hash_list) - len(found_hashes)}" + Fore.RESET)
 
-        # Check found hashes in VirusTotal
+        # Check found hashes in VirusTotal via Tor
         if found_hashes:
-            start_vt_worker()
-            for hash_value, hash_type in found_hashes:
-                vt_queue.put((hash_value, hash_type, verbose))
-            vt_queue.join()
+            start_tor()
+            try:
+                if tor_controller:
+                    for hash_value, hash_type in found_hashes:
+                        cached_results = check_cache(hash_value, hash_type)
+                        if 'virustotal' not in cached_results or cached_results['virustotal'] is None:
+                            result = search_virustotal(hash_value, hash_type, verbose, use_tor=True)
+                            cached_results['virustotal'] = result
+                            save_to_cache(hash_value, hash_type, cached_results)
+                else:
+                    print("[+] Tor not available, skipping VirusTotal check.")
+                    # Fall back to normal mode if Tor is unavailable
+                    start_vt_worker()
+                    for hash_value, hash_type in found_hashes:
+                        vt_queue.put((hash_value, hash_type, verbose))
+                    vt_queue.join()
+            finally:
+                stop_tor()
 
     elif mode == 'extra':
         # Extra mode: multi-phase with user prompts
@@ -609,6 +682,7 @@ if __name__ == "__main__":
         parser.add_argument('-service', choices=['misp', 'hashlookup', 'otx', 'kaspersky', 'virustotal', 'all'],
                             default='all', help="Service to search the hash in (default: all)")
         parser.add_argument('--view', help="View full details of a specific hash from the cache")
+        parser.add_argument('--vt_view', help="View only VirusTotal results of a specific hash from the cache")
         parser.add_argument('--vt_confirm', action='store_true', help="Check found hashes in VirusTotal")
         parser.add_argument('-q', '--quick', action='store_true', help="Quick mode: sequential check and VT confirmation")
         parser.add_argument('-e', '--extra', action='store_true', help="Extra mode: multi-phase with user prompts")
@@ -617,6 +691,9 @@ if __name__ == "__main__":
         # Check for mutually exclusive modes
         if args.quick and args.extra:
             print(Fore.RED + "[+] Error: Cannot use -q and -e together" + Fore.RESET)
+            exit(1)
+        if args.view and args.vt_view:
+            print(Fore.RED + "[+] Error: Cannot use --view and --vt_view together" + Fore.RESET)
             exit(1)
 
         # Initialize configuration
@@ -627,6 +704,7 @@ if __name__ == "__main__":
         VT_API_KEYS = config['vt_keys']
         KASPERSKY_API_KEY = config['kaspersky_key']
         CACHE_DB = config['cache_db']
+        TOR_PATH = config.get('tor_path', '')
 
         # Handle view cache option
         if args.view:
@@ -641,6 +719,21 @@ if __name__ == "__main__":
                 print(json.dumps(cached_result, indent=4))
             else:
                 print(Fore.RED + f"[+] Hash {hash_value} not found in cache." + Fore.RESET)
+            exit(0)
+
+        # Handle VirusTotal view cache option
+        if args.vt_view:
+            hash_value = args.vt_view
+            hash_type = detect_hash_type(hash_value)
+            if hash_type in ['empty', 'invalid', 'unknown']:
+                print(Fore.RED + f"[+] Invalid hash: {hash_value}" + Fore.RESET)
+                exit(1)
+            cached_result = check_cache(hash_value, hash_type)
+            if cached_result and 'virustotal' in cached_result and cached_result['virustotal']:
+                print(Fore.CYAN + "\n[+] VirusTotal results for hash:" + Fore.RESET, hash_value)
+                print(json.dumps(cached_result['virustotal'], indent=4))
+            else:
+                print(Fore.RED + f"[+] No VirusTotal results found for hash {hash_value} in cache." + Fore.RESET)
             exit(0)
 
         # Validate input options
