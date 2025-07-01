@@ -4,5 +4,6 @@
   "otx_key": "your_otx_key",
   "vt_keys": ["your_vt_key1", "your_vt_key2"],
   "kaspersky_key": "your_kaspersky_key",
-  "cache_db": "cache.db"
+  "cache_db": "cache.db",
+  "tor_path": "Your Tor PATH"
 }
