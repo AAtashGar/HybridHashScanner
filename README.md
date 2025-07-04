@@ -91,4 +91,4 @@ On first run, the tool prompts for:
 These are saved to `config.json` for subsequent runs.
 
 ## Wiki
-For detailed technical documentation, code breakdowns, and advanced usage, see the [Wiki](https://github.com/AAtashGar/HybridHashScanner/wiki).
+For detailed technical documentation, code breakdowns, and advanced usage, see the [Wiki](https://github.com/AAtashGar/HybridHashScanner/wiki/HybridHashScanner).
