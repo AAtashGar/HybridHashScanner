@@ -461,7 +461,7 @@ def calculate_estimated_time(mode, hash_list, services_to_search=None):
         time_phase3 = N * (60 / 4)  # VirusTotal rate limit (assuming all hashes checked)
         estimated_seconds = time_phase1 + time_phase2 + time_phase3
     else:
-        # Normal mode: based on selected services
+        # Normal mode: linear based on selected services
         estimated_seconds = 0
         for service in services_to_search:
             if service == 'otx':
@@ -480,7 +480,7 @@ def format_time(seconds):
     seconds = int(seconds % 60)
     return f"{hours} hours {minutes} minutes {seconds} seconds"
 
-def process_hashes(hash_list, verbose=False, mode='normal', vt_confirm=False):
+def process_hashes(hash_list, verbose=False, mode='normal', vt_confirm=False, use_tor=False):
     # Process a list of (hash_value, hash_type) tuples based on mode and service
     if mode == 'quick':
         # Quick mode: sequential check in cache, MISP, Hashlookup, OTX, Kaspersky
@@ -536,26 +536,28 @@ def process_hashes(hash_list, verbose=False, mode='normal', vt_confirm=False):
             print(Fore.CYAN + f"[+] Found in {service}: {count}" + Fore.RESET)
         print(Fore.CYAN + f"[+] Not found: {len(hash_list) - len(found_hashes)}" + Fore.RESET)
 
-        # Check found hashes in VirusTotal via Tor
+        # Check found hashes in VirusTotal, using Tor if specified
         if found_hashes:
-            start_tor()
-            try:
-                if tor_controller:
-                    for hash_value, hash_type in found_hashes:
-                        cached_results = check_cache(hash_value, hash_type)
-                        if 'virustotal' not in cached_results or cached_results['virustotal'] is None:
-                            result = search_virustotal(hash_value, hash_type, verbose, use_tor=True)
-                            cached_results['virustotal'] = result
-                            save_to_cache(hash_value, hash_type, cached_results)
-                else:
-                    print("[+] Tor not available, skipping VirusTotal check.")
-                    # Fall back to normal mode if Tor is unavailable
-                    start_vt_worker()
-                    for hash_value, hash_type in found_hashes:
-                        vt_queue.put((hash_value, hash_type, verbose))
-                    vt_queue.join()
-            finally:
-                stop_tor()
+            if use_tor:
+                start_tor()
+                try:
+                    if tor_controller:
+                        for hash_value, hash_type in found_hashes:
+                            cached_results = check_cache(hash_value, hash_type)
+                            if 'virustotal' not in cached_results or cached_results['virustotal'] is None:
+                                result = search_virustotal(hash_value, hash_type, verbose, use_tor=True)
+                                cached_results['virustotal'] = result
+                                save_to_cache(hash_value, hash_type, cached_results)
+                    else:
+                        print("[+] Tor not available, skipping VirusTotal check.")
+                finally:
+                    stop_tor()
+            else:
+                # Use normal VirusTotal worker without Tor
+                start_vt_worker()
+                for hash_value, hash_type in found_hashes:
+                    vt_queue.put((hash_value, hash_type, verbose))
+                vt_queue.join()
 
     elif mode == 'extra':
         # Extra mode: multi-phase with user prompts
@@ -709,6 +711,7 @@ if __name__ == "__main__":
         parser.add_argument('--vt_confirm', action='store_true', help="Check found hashes in VirusTotal")
         parser.add_argument('-q', '--quick', action='store_true', help="Quick mode: sequential check and VT confirmation")
         parser.add_argument('-e', '--extra', action='store_true', help="Extra mode: multi-phase with user prompts")
+        parser.add_argument('-tor', action='store_true', help="Use Tor for VirusTotal requests in Quick mode (optional)")
         args = parser.parse_args()
 
         # Check for mutually exclusive modes
@@ -801,12 +804,15 @@ if __name__ == "__main__":
         if args.quick:
             mode = 'quick'
             vt_confirm = True
+            use_tor = args.tor  # Use Tor only if -tor flag is provided in Quick mode
         elif args.extra:
             mode = 'extra'
             vt_confirm = args.vt_confirm
+            use_tor = False  # Tor is not used in Extra mode
         else:
             mode = 'normal'
             vt_confirm = args.vt_confirm
+            use_tor = False  # Tor is not used in Normal mode
 
         # Calculate and display estimated time
         if mode == 'normal':
@@ -818,7 +824,7 @@ if __name__ == "__main__":
 
         # Process hashes
         print(Fore.CYAN + f"[+] Processing {len(hash_list)} hash(es) in {mode} mode..." + Fore.RESET)
-        results = process_hashes(hash_list, args.verbose, mode=mode, vt_confirm=vt_confirm)
+        results = process_hashes(hash_list, args.verbose, mode=mode, vt_confirm=vt_confirm, use_tor=use_tor)
         save_to_json(results, args.output)
         print(Fore.GREEN + f"[+] Results saved to '{args.output}' and cached in '{CACHE_DB}'." + Fore.RESET)
 
