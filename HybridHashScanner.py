@@ -20,28 +20,28 @@ from stem import Signal
 from stem.control import Controller
 from stem.process import launch_tor_with_config
 
-# Disable insecure request warnings
+# Disable insecure request warnings for HTTP requests
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Initialize colorama for colored terminal output
 init()
 
-# Get terminal width for formatting
+# Get terminal width for formatting logo and info box
 terminal_width = shutil.get_terminal_size().columns
 
-# Set box width to a fixed value of 60 characters
+# Set a fixed width for the info box
 box_width = 60
 
-# Create Figlet object with 'small' font for logo
+# Create a Figlet object with 'small' font for the logo
 f = Figlet(font='small')
 
-# Render the logo
+# Render the tool's logo
 logo = f.renderText('HybridHashScanner')
 
 # Print the logo in white
 print(Fore.WHITE + logo + Fore.RESET)
 
-# Define the information lines
+# Define information lines to display after the logo
 info_lines = [
     "Version: 1.0.0",
     "HybridHashScanner - Hash Analysis Tool",
@@ -52,11 +52,11 @@ info_lines = [
     "> https://www.linkedin.com/in/ali-atashgar/"
 ]
 
-# Function to center text within the box
+# Function to center text within a specified width
 def center_text(text, width):
     return text.center(width)
 
-# Create and print the top border
+# Print the top border of the info box
 top_border = '┌' + '─' * (box_width) + '┐'
 print(Fore.WHITE + top_border + Fore.RESET)
 
@@ -65,7 +65,7 @@ for line in info_lines:
     centered_line = center_text(line, box_width)
     print(Fore.WHITE + '│' + centered_line + '│' + Fore.RESET)
 
-# Create and print the bottom border
+# Print the bottom border of the info box
 bottom_border = '└' + '─' * (box_width) + '┘'
 print(Fore.WHITE + bottom_border + Fore.RESET)
 
@@ -73,7 +73,7 @@ print(Fore.WHITE + bottom_border + Fore.RESET)
 CONFIG_FILE = 'config.json'
 CACHE_DB = 'cache.db'
 
-# Define queues for OTX and VirusTotal workers
+# Define queues for OTX and VirusTotal workers to handle concurrent requests
 otx_queue = queue.Queue()
 vt_queue = queue.Queue()
 
@@ -81,16 +81,16 @@ vt_queue = queue.Queue()
 results_dict = {}
 results_lock = threading.Lock()
 
-# Global variables to track worker status
+# Global flags to track worker thread status
 otx_worker_started = False
 vt_worker_started = False
 
-# Global variables for Tor
+# Global variables for managing Tor process
 tor_controller = None
 tor_process = None
 
 def load_config():
-    """Load configuration from config.json file."""
+    """Load configuration settings from config.json file."""
     if not os.path.exists(CONFIG_FILE):
         print(Fore.RED + f"[+] Configuration file '{CONFIG_FILE}' not found. Please create and configure it." + Fore.RESET)
         exit(1)
@@ -98,7 +98,7 @@ def load_config():
         return json.load(f)
 
 def detect_hash_type(hash_str):
-    """Detect the type of hash based on its length and content."""
+    """Detect the hash type (md5, sha1, sha256, sha512) based on length and content."""
     hash_str = hash_str.strip()
     if not hash_str:
         return 'empty'
@@ -117,7 +117,7 @@ def detect_hash_type(hash_str):
         return 'unknown'
 
 def extract_hashes_from_directory(directory, file_type):
-    """Extract hashes from files in the directory based on file_type."""
+    """Extract valid hashes from files in a directory based on file type (csv or txt)."""
     pattern = '*.csv' if file_type == 'csv' else '*.txt'
     files = glob.glob(os.path.join(directory, pattern))
     hashes = []
@@ -125,7 +125,7 @@ def extract_hashes_from_directory(directory, file_type):
         with open(file, 'r', encoding='utf-8-sig') as f:
             if file_type == 'csv':
                 reader = csv.reader(f)
-                next(reader, None)  # Skip header
+                next(reader, None)  # Skip header row
                 for row in reader:
                     for value in row:
                         hash_type = detect_hash_type(value)
@@ -140,7 +140,7 @@ def extract_hashes_from_directory(directory, file_type):
     return hashes
 
 def check_cache(hash_value, hash_type):
-    """Check if the hash exists in the SQLite cache and return the results dictionary."""
+    """Check if a hash exists in the SQLite cache and return its results."""
     conn = sqlite3.connect(CACHE_DB)
     cursor = conn.cursor()
     cursor.execute('SELECT result FROM cache WHERE hash = ? AND hash_type = ?', (hash_value, hash_type))
@@ -151,7 +151,7 @@ def check_cache(hash_value, hash_type):
     return {}
 
 def save_to_cache(hash_value, hash_type, results):
-    """Save the results dictionary to the SQLite cache."""
+    """Save or update results for a hash in the SQLite cache."""
     conn = sqlite3.connect(CACHE_DB)
     cursor = conn.cursor()
     cursor.execute('INSERT OR REPLACE INTO cache (hash, hash_type, result) VALUES (?, ?, ?)',
@@ -160,7 +160,7 @@ def save_to_cache(hash_value, hash_type, results):
     conn.close()
 
 def search_misp(hash_value, hash_type, verbose=False):
-    """Search for the hash in MISP. Return full attributes if found, else None."""
+    """Search for a hash in MISP and return attributes if found, else None."""
     if not MISP_URL or not MISP_KEY:
         print(Fore.YELLOW + "[+] MISP is not configured in config.json. Skipping MISP search." + Fore.RESET)
         return None
@@ -182,7 +182,7 @@ def search_misp(hash_value, hash_type, verbose=False):
         return None
 
 def search_circl_hashlookup(hash_value, hash_type, verbose=False):
-    """Search for the hash in CIRCL Hashlookup. Return full result if found, else None."""
+    """Search for a hash in CIRCL Hashlookup and return results if found, else None."""
     if hash_type not in ['md5', 'sha1', 'sha256']:
         return None
     url = f"https://hashlookup.circl.lu/lookup/{hash_type}/{hash_value}"
@@ -212,7 +212,7 @@ def search_circl_hashlookup(hash_value, hash_type, verbose=False):
         return None
 
 def search_otx(hash_value, hash_type, verbose=False):
-    """Search for the hash in OTX. Return full result if found, else None."""
+    """Search for a hash in OTX and return results if found, else None."""
     if not OTX_API_KEY:
         print(Fore.YELLOW + "[+] OTX is not configured in config.json. Skipping OTX search." + Fore.RESET)
         return None
@@ -226,7 +226,7 @@ def search_otx(hash_value, hash_type, verbose=False):
             data = response.json()
             if data.get('pulse_info', {}).get('count', 0) > 0:
                 if verbose:
-                    print(Fore.GREEN + f"[+] OTX search done for {hash_value}" + Fore.RESET)
+                    print(Fore.GREEN + f"[+] OTX search done for {hash_value}" + Fare.RESET)
                 return data
             if verbose:
                 print(Fore.GREEN + f"[+] OTX search done for {hash_value}" + Fore.RESET)
@@ -244,7 +244,7 @@ def search_otx(hash_value, hash_type, verbose=False):
         return None
 
 def search_kaspersky(hash_value, hash_type, verbose=False):
-    """Search for the hash in Kaspersky Threat Intelligence Portal. Return full result if not Clean, else None."""
+    """Search for a hash in Kaspersky OpenTIP and return results if not clean, else None."""
     if not KASPERSKY_API_KEY:
         print(Fore.YELLOW + "[+] Kaspersky is not configured in config.json. Skipping Kaspersky search." + Fore.RESET)
         return None
@@ -277,7 +277,7 @@ def search_kaspersky(hash_value, hash_type, verbose=False):
         return None
 
 def start_tor():
-    """Start a Tor instance."""
+    """Start a Tor instance for anonymous requests."""
     global tor_controller, tor_process
     if not TOR_PATH:
         print(Fore.YELLOW + "[+] Tor path is not configured in config.json. Skipping Tor usage." + Fore.RESET)
@@ -306,7 +306,7 @@ def start_tor():
         tor_process = None
 
 def stop_tor():
-    """Stop the Tor instance."""
+    """Stop the running Tor instance."""
     global tor_controller, tor_process
     if tor_controller:
         tor_controller.close()
@@ -315,7 +315,7 @@ def stop_tor():
         print("[+] Tor stopped.")
 
 def search_virustotal(hash_value, hash_type, verbose=False, use_tor=False):
-    """Search for the hash in VirusTotal with or without Tor, returning full response."""
+    """Search for a hash in VirusTotal with or without Tor, returning full response."""
     if not VT_API_KEYS:
         print(Fore.YELLOW + "[+] VirusTotal is not configured in config.json. Skipping VirusTotal search." + Fore.RESET)
         return None
@@ -358,7 +358,7 @@ def otx_worker():
             if verbose:
                 print(Fore.GREEN + f"[+] OTX result saved for {hash_value}" + Fore.RESET)
         otx_queue.task_done()
-        time.sleep(3600 / 10000)  # Rate limit for OTX
+        time.sleep(3600 / 10000)  # Rate limit: 10,000 requests per hour
 
 def vt_worker():
     """Worker thread for processing VirusTotal requests with rate limiting."""
@@ -374,29 +374,24 @@ def vt_worker():
             if verbose:
                 print(Fore.GREEN + f"[+] VT result saved for {hash_value}" + Fore.RESET)
         vt_queue.task_done()
-        time.sleep(60 / 4)  # Rate limit for VirusTotal
+        time.sleep(60 / 4)  # Rate limit: 4 requests per minute
 
 def start_otx_worker():
-    """Start the OTX worker thread if not already started."""
+    """Start the OTX worker thread if it hasn't been started yet."""
     global otx_worker_started
     if not otx_worker_started:
         threading.Thread(target=otx_worker, daemon=True).start()
         otx_worker_started = True
 
 def start_vt_worker():
-    """Start the VirusTotal worker thread if not already started."""
+    """Start the VirusTotal worker thread if it hasn't治 hasn't been started yet."""
     global vt_worker_started
     if not vt_worker_started:
         threading.Thread(target=vt_worker, daemon=True).start()
         vt_worker_started = True
 
-def save_to_json(results, output_file):
-    """Save results to a JSON file."""
-    with open(output_file, 'w') as f:
-        json.dump(results, f, indent=4)
-
-def print_summary_table(results):
-    """Print a summary table of the results with full hash values."""
+def get_summary_table(results):
+    """Generate a summary table of results as a string."""
     headers = ["Hash", "MISP", "Hashlookup", "OTX", "Kaspersky", "VirusTotal"]
     table = []
     for hash_value, data in results.items():
@@ -409,39 +404,62 @@ def print_summary_table(results):
             "Yes" if data.get('virustotal') else "No"
         ]
         table.append(row)
-    print(tabulate(table, headers=headers, tablefmt="grid"))
+    return tabulate(table, headers=headers, tablefmt="grid")
+
+def get_vt_results_table(hash_value, vt_results):
+    """Generate VirusTotal results table for a hash as a string."""
+    if not vt_results or 'data' not in vt_results:
+        return f"[+] No VirusTotal results found for hash {hash_value}"
+    attributes = vt_results.get('data', {}).get('attributes', {})
+    stats = attributes.get('last_analysis_stats', {})
+    tags = ', '.join(attributes.get('tags', []))
+    names = ', '.join(attributes.get('names', []))
+    table = [
+        ["Hash", hash_value],
+        ["Malicious", stats.get('malicious', 0)],
+        ["Suspicious", stats.get('suspicious', 0)],
+        ["Harmless", stats.get('harmless', 0)],
+        ["Undetected", stats.get('undetected', 0)],
+        ["Tags", tags],
+        ["Names", names]
+    ]
+    return tabulate(table, headers=["Field", "Value"], tablefmt="grid")
 
 def calculate_estimated_time(mode, hash_list, services_to_search=None):
     """Calculate estimated time for processing hashes based on mode and services."""
     N = len(hash_list)
     if mode == 'quick':
-        time_per_hash = 10  # OTX rate limit
+        time_per_hash = 10  # seconds, based on OTX delay approximation
         estimated_seconds = N * time_per_hash
     elif mode == 'extra':
-        time_phase1 = N * (3600 / 10000)  # OTX rate limit
-        time_phase2 = N * 60  # Kaspersky rate limit
-        time_phase3 = N * (60 / 4)  # VirusTotal rate limit
+        # Assuming phases with different rate limits
+        time_phase1 = N * (3600 / 10000)  # OTX rate limit: 10,000 per hour
+        time_phase2 = N * 60  # Kaspersky rate limit: 1 per minute
+        time_phase3 = N * (60 / 4)  # VirusTotal rate limit: 4 per minute
         estimated_seconds = time_phase1 + time_phase2 + time_phase3
-    else:
+    else:  # normal mode
         estimated_seconds = 0
+        if services_to_search is None:
+            services_to_search = ['misp', 'hashlookup', 'otx', 'kaspersky', 'virustotal']
         for service in services_to_search:
             if service == 'otx':
-                estimated_seconds += N * (3600 / 10000)
+                estimated_seconds += N * (3600 / 10000)  # OTX rate limit
             elif service == 'kaspersky':
-                estimated_seconds += N * 60
+                estimated_seconds += N * 60  # Kaspersky rate limit
             elif service == 'virustotal':
-                estimated_seconds += N * (60 / 4)
+                estimated_seconds += N * (60 / 4)  # VirusTotal rate limit
+            # MISP and hashlookup assumed to have negligible time or parallel processing
     return estimated_seconds
 
 def format_time(seconds):
-    """Format seconds into hours, minutes, and seconds."""
+    """Format seconds into a human-readable string (hours, minutes, seconds)."""
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
     seconds = int(seconds % 60)
     return f"{hours} hours {minutes} minutes {seconds} seconds"
 
 def process_hashes(hash_list, verbose=False, mode='normal', use_tor=False):
-    """Process a list of (hash_value, hash_type) tuples based on mode."""
+    """Process a list of hashes based on the specified mode (normal, quick, extra)."""
     if mode == 'quick':
         found_counts = {'cache': 0, 'misp': 0, 'hashlookup': 0, 'otx': 0, 'kaspersky': 0}
         found_hashes = []
@@ -478,7 +496,7 @@ def process_hashes(hash_list, verbose=False, mode='normal', use_tor=False):
                         found = True
                         found_hashes.append((hash_value, hash_type))
                         break
-                    time.sleep(10)
+                    time.sleep(10)  # Respect OTX rate limit
                 elif service == 'kaspersky':
                     result = search_kaspersky(hash_value, hash_type, verbose)
                     if result is not None:
@@ -494,7 +512,7 @@ def process_hashes(hash_list, verbose=False, mode='normal', use_tor=False):
             print(Fore.CYAN + f"[+] Found in {service}: {count}" + Fore.RESET)
         print(Fore.CYAN + f"[+] Not found: {len(hash_list) - len(found_hashes)}" + Fore.RESET)
 
-        # Always check found hashes in VirusTotal in quick mode
+        # Check found hashes in VirusTotal in quick mode
         if found_hashes and VT_API_KEYS:
             if use_tor:
                 start_tor()
@@ -519,7 +537,7 @@ def process_hashes(hash_list, verbose=False, mode='normal', use_tor=False):
     elif mode == 'extra':
         initial_services = ['misp', 'hashlookup', 'otx']
         for hash_value, hash_type in hash_list:
-            cached_results = check_cache(hash_value, hash_type)
+            cached_results = cached_results = check_cache(hash_value, hash_type)
             for service in initial_services:
                 if service not in cached_results or cached_results[service] is None:
                     if service == 'misp':
@@ -581,7 +599,7 @@ def process_hashes(hash_list, verbose=False, mode='normal', use_tor=False):
                             vt_queue.put((hash_value, hash_type, verbose))
                         vt_queue.join()
 
-    else:
+    else:  # Normal mode
         services_to_search = [args.service] if args.service != 'all' else ['misp', 'hashlookup', 'otx', 'kaspersky', 'virustotal']
         for hash_value, hash_type in hash_list:
             cached_results = check_cache(hash_value, hash_type)
@@ -609,53 +627,31 @@ def process_hashes(hash_list, verbose=False, mode='normal', use_tor=False):
         if 'virustotal' in services_to_search:
             vt_queue.join()
 
+    # Compile final results from cache
     results = {}
     for hash_value, hash_type in hash_list:
         results[hash_value] = check_cache(hash_value, hash_type)
     return results
 
-def display_vt_results(hash_value, vt_results):
-    """Display important VirusTotal results in a dynamic table."""
-    if not vt_results or 'data' not in vt_results:
-        print(Fore.RED + f"[+] No VirusTotal results found for hash {hash_value}" + Fore.RESET)
-        return
-
-    attributes = vt_results.get('data', {}).get('attributes', {})
-    stats = attributes.get('last_analysis_stats', {})
-    tags = ', '.join(attributes.get('tags', []))
-    names = ', '.join(attributes.get('names', []))
-
-    table = [
-        ["Hash", hash_value],
-        ["Malicious", stats.get('malicious', 0)],
-        ["Suspicious", stats.get('suspicious', 0)],
-        ["Harmless", stats.get('harmless', 0)],
-        ["Undetected", stats.get('undetected', 0)],
-        ["Tags", tags],
-        ["Names", names]
-    ]
-
-    print(Fore.CYAN + "\n[+] VirusTotal Results:" + Fore.RESET)
-    print(tabulate(table, headers=["Field", "Value"], tablefmt="grid"))
-
 if __name__ == "__main__":
     try:
-        # Define argument parser without --vt_confirm
+        # Define command-line argument parser
         parser = argparse.ArgumentParser(description="Check hashes against various threat intelligence services.")
-        parser.add_argument('-directory', help="Path to the directory containing files with hashes")
+        parser.add_argument('-directory', help="Path to directory containing files with hashes")
         parser.add_argument('-file_type', choices=['csv', 'txt'], help="Type of files to process (csv or txt)")
         parser.add_argument('-hash', help="A single hash to check directly")
-        parser.add_argument('-output', default='results.json', help="Output JSON file (default: results.json)")
+        parser.add_argument('-output', default='results.txt', help="Output text file for summary and VT results (default: results.txt)")
         parser.add_argument('-v', '--verbose', action='store_true', help="Enable verbose output")
         parser.add_argument('-service', choices=['misp', 'hashlookup', 'otx', 'kaspersky', 'virustotal', 'all'],
                             default='all', help="Service to search the hash in (default: all)")
-        parser.add_argument('--view', help="View full details of a specific hash from the cache in structured format")
-        parser.add_argument('--vt_view', help="View only VirusTotal results of a specific hash from the cache")
-        parser.add_argument('-q', '--quick', action='store_true', help="Quick mode: sequential check and VT confirmation")
+        parser.add_argument('--view', help="View full details of a specific hash from cache")
+        parser.add_argument('--vt_view', help="View only VirusTotal results of a specific hash from cache")
+        parser.add_argument('-q', '--quick', action='store_true', help="Quick mode: sequential check with VT confirmation")
         parser.add_argument('-e', '--extra', action='store_true', help="Extra mode: multi-phase with user prompts")
-        parser.add_argument('-tor', action='store_true', help="Use Tor for VirusTotal requests in Quick mode")
+        parser.add_argument('-tor', action='store_true', help="Use Tor for VirusTotal requests in quick mode")
         args = parser.parse_args()
 
+        # Validate mutually exclusive options
         if args.quick and args.extra:
             print(Fore.RED + "[+] Error: Cannot use -q and -e together" + Fore.RESET)
             exit(1)
@@ -673,7 +669,7 @@ if __name__ == "__main__":
         CACHE_DB = config.get('cache_db', 'cache.db')
         TOR_PATH = config.get('tor_path', '')
 
-        # Handle --view switch with structured output
+        # Handle --view switch to display full cached results
         if args.view:
             hash_value = args.view
             hash_type = detect_hash_type(hash_value)
@@ -691,7 +687,7 @@ if __name__ == "__main__":
                 print(Fore.RED + f"[+] No cached results found for {hash_value}" + Fore.RESET)
             exit(0)
 
-        # Handle --vt_view switch
+        # Handle --vt_view switch to display VirusTotal results from cache
         if args.vt_view:
             hash_value = args.vt_view
             hash_type = detect_hash_type(hash_value)
@@ -700,12 +696,15 @@ if __name__ == "__main__":
                 exit(1)
             cached_result = check_cache(hash_value, hash_type)
             if cached_result and 'virustotal' in cached_result and cached_result['virustotal']:
-                display_vt_results(hash_value, cached_result['virustotal'])
+                vt_results = cached_result['virustotal']
+                vt_table = get_vt_results_table(hash_value, vt_results)
+                print(Fore.CYAN + "\n[+] VirusTotal Results:" + Fore.RESET)
+                print(vt_table)
             else:
                 print(Fore.RED + f"[+] No VirusTotal results found for hash {hash_value} in cache." + Fore.RESET)
             exit(0)
 
-        # Input validation
+        # Validate input arguments
         if args.hash and (args.directory or args.file_type):
             print(Fore.RED + "[+] Error: Cannot provide both -hash and -directory/-file_type" + Fore.RESET)
             exit(1)
@@ -726,7 +725,7 @@ if __name__ == "__main__":
             parser.print_help()
             exit(1)
 
-        # Initialize MISP if needed
+        # Initialize MISP if required by the selected mode or service
         if args.service in ['misp', 'all'] or args.quick or args.extra:
             if MISP_URL and MISP_KEY:
                 misp = pymisp.PyMISP(MISP_URL, MISP_KEY, ssl=False)
@@ -748,7 +747,7 @@ if __name__ == "__main__":
         conn.commit()
         conn.close()
 
-        # Set processing mode
+        # Determine processing mode based on arguments
         if args.quick:
             mode = 'quick'
             use_tor = args.tor
@@ -759,7 +758,7 @@ if __name__ == "__main__":
             mode = 'normal'
             use_tor = False
 
-        # Calculate estimated time
+        # Calculate and display estimated time before processing
         if mode == 'normal':
             services_to_search = [args.service] if args.service != 'all' else ['misp', 'hashlookup', 'otx', 'kaspersky', 'virustotal']
             estimated_seconds = calculate_estimated_time(mode, hash_list, services_to_search)
@@ -767,25 +766,45 @@ if __name__ == "__main__":
             estimated_seconds = calculate_estimated_time(mode, hash_list)
         print(Fore.CYAN + f"[+] Estimated time to complete: {format_time(estimated_seconds)}" + Fore.RESET)
 
-        # Process hashes
+        # Process hashes and get results
         print(Fore.CYAN + f"[+] Processing {len(hash_list)} hash(es) in {mode} mode..." + Fore.RESET)
         results = process_hashes(hash_list, args.verbose, mode=mode, use_tor=use_tor)
-        save_to_json(results, args.output)
-        print(Fore.GREEN + f"[+] Results saved to '{args.output}' and cached in '{CACHE_DB}'." + Fore.RESET)
 
-        # Print summary table
-        print(Fore.CYAN + "\n[+] Summary of results:" + Fore.RESET)
-        print_summary_table(results)
+        # Generate summary table string
+        summary_str = get_summary_table(results)
 
-        # Automatically display VirusTotal results for found hashes in quick mode
+        # Write summary to output file
+        with open(args.output, 'w') as f:
+            f.write("[+] Summary of results:\n")
+            f.write(summary_str + "\n")
+
+        # If verbose is enabled, print summary to console
+        if args.verbose:
+            print(Fore.CYAN + "[+] Summary of results:" + Fore.RESET)
+            print(summary_str)
+
+        # In quick mode, handle VirusTotal results for found hashes
         if mode == 'quick':
             found_hashes = [h for h in hash_list if any(results[h[0]].get(s) for s in ['misp', 'hashlookup', 'otx', 'kaspersky'])]
-            print(Fore.CYAN + "\n[+] VirusTotal Results for Found Hashes:" + Fore.RESET)
             for hash_value, hash_type in found_hashes:
                 vt_results = results[hash_value].get('virustotal')
                 if vt_results:
-                    display_vt_results(hash_value, vt_results)
+                    vt_str = get_vt_results_table(hash_value, vt_results)
+                    with open(args.output, 'a') as f:
+                        f.write("\n[+] VirusTotal Results:\n")
+                        f.write(vt_str + "\n")
+                    if args.verbose:
+                        print(Fore.CYAN + f"[+] VirusTotal Results for {hash_value}:" + Fore.RESET)
+                        print(vt_str)
                 else:
-                    print(Fore.YELLOW + f"[+] No VirusTotal results for {hash_value}" + Fore.RESET)
+                    no_vt_str = f"[+] No VirusTotal results for {hash_value}"
+                    with open(args.output, 'a') as f:
+                        f.write(no_vt_str + "\n")
+                    if args.verbose:
+                        print(Fore.YELLOW + no_vt_str + Fore.RESET)
+
+        # Print completion messages
+        print(Fore.GREEN + f"[+] Summary and VirusTotal results saved to '{args.output}'." + Fore.RESET)
+        print(Fore.GREEN + f"[+] Results cached in '{CACHE_DB}'." + Fore.RESET)
     except Exception as e:
         print(Fore.RED + f"[+] An error occurred: {e}" + Fore.RESET)
