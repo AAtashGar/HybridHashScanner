@@ -1,3 +1,45 @@
+# Install required modules 
+# python.exe .\HybridHashScanner.py --install
+
+# Run IN Quick Mode Without verbose 
+# -tor is Optional 
+# python.exe .\HybridHashScanner.py  -directory Your Directory -file_type csv -q -tor
+
+# Run IN Quick Mode With verbose
+# -tor is Optional
+# python.exe .\HybridHashScanner.py  -directory Your Directory -file_type csv -q -v -tor
+
+import sys
+import subprocess
+import importlib
+
+# List of required external modules
+required_modules = ['pymisp', 'requests', 'tabulate', 'pyfiglet', 'colorama', 'stem', 'chardet', 'pysocks']
+
+# Check for missing modules
+missing_modules = []
+for module in required_modules:
+    try:
+        importlib.import_module(module)
+    except ImportError:
+        missing_modules.append(module)
+
+# Handle --install switch to install missing modules
+if '--install' in sys.argv:
+    if missing_modules:
+        print("Installing missing modules...")
+        for module in missing_modules:
+            try:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", module])
+            except subprocess.CalledProcessError:
+                print(f"Failed to install {module}")
+                exit(1)
+        print("All modules installed successfully.")
+    else:
+        print("All required modules are already installed.")
+    exit(0)
+
+# Now, import all required modules after potential installation
 import pymisp
 import sqlite3
 import json
@@ -19,6 +61,7 @@ from colorama import init, Fore
 from stem import Signal
 from stem.control import Controller
 from stem.process import launch_tor_with_config
+import chardet
 
 # Disable insecure request warnings for HTTP requests
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -46,10 +89,7 @@ info_lines = [
     "Version: 1.0.0",
     "HybridHashScanner - Hash Analysis Tool",
     " MISP, VirusTotal, OTX, hashlookup, OpenTip",
-    " A.AtashGar (atashgar7@gmail.com)",
-    " Licensed under MIT License",
-    "> https://github.com/AAtashGar/HybridHashScanner",
-    "> https://www.linkedin.com/in/ali-atashgar/"
+    " Licensed under MIT License"
 ]
 
 # Function to center text within a specified width
@@ -116,28 +156,84 @@ def detect_hash_type(hash_str):
     else:
         return 'unknown'
 
-def extract_hashes_from_directory(directory, file_type):
-    """Extract valid hashes from files in a directory based on file type (csv or txt)."""
+def detect_encoding(file_path):
+    """Detect the encoding of a file using chardet."""
+    with open(file_path, 'rb') as f:
+        raw_data = f.read()
+    result = chardet.detect(raw_data)
+    encoding = result['encoding']
+    if encoding is None:
+        encoding = 'utf-8'
+    return encoding
+
+def extract_hashes_from_directory(directory, file_type, hash_type_filter=None):
+    """Extract valid hashes from files in a directory based on file type (csv or txt), with optional hash type filtering."""
     pattern = '*.csv' if file_type == 'csv' else '*.txt'
     files = glob.glob(os.path.join(directory, pattern))
-    hashes = []
+    all_hashes = []
+    unique_hashes = set()
+
     for file in files:
-        with open(file, 'r', encoding='utf-8-sig') as f:
-            if file_type == 'csv':
-                reader = csv.reader(f)
-                next(reader, None)  # Skip header row
-                for row in reader:
-                    for value in row:
-                        hash_type = detect_hash_type(value)
-                        if hash_type not in ['empty', 'invalid', 'unknown']:
-                            hashes.append((value, hash_type))
-            elif file_type == 'txt':
-                for line in f:
-                    hash_str = line.strip()
-                    hash_type = detect_hash_type(hash_str)
-                    if hash_type not in ['empty', 'invalid', 'unknown']:
-                        hashes.append((hash_str, hash_type))
-    return hashes
+        encoding = detect_encoding(file)
+        try:
+            with open(file, 'r', encoding=encoding) as f:
+                if file_type == 'csv':
+                    reader = csv.reader(f)
+                    next(reader, None)  # Skip header row
+                    for row in reader:
+                        for value in row:
+                            hash_type = detect_hash_type(value)
+                            if hash_type not in ['empty', 'invalid', 'unknown']:
+                                all_hashes.append((value, hash_type))
+                                unique_hashes.add((value, hash_type))
+                elif file_type == 'txt':
+                    for line in f:
+                        # Use regex to find potential hash strings, including tagged ones
+                        potential_hashes = re.findall(r'(?:(?:md5|sha1|sha256|sha512)[:\s]+)?([0-9a-fA-F]{32,128})\b', line, re.IGNORECASE)
+                        for hash_str in potential_hashes:
+                            hash_type = detect_hash_type(hash_str)
+                            if hash_type not in ['empty', 'invalid', 'unknown']:
+                                all_hashes.append((hash_str, hash_type))
+                                unique_hashes.add((hash_str, hash_type))
+        except UnicodeDecodeError:
+            print(Fore.YELLOW + f"[+] Warning: Could not decode {file} with detected encoding {encoding}. Trying with 'latin1'." + Fore.RESET)
+            with open(file, 'r', encoding='latin1') as f:
+                if file_type == 'csv':
+                    reader = csv.reader(f)
+                    next(reader, None)  # Skip header row
+                    for row in reader:
+                        for value in row:
+                            hash_type = detect_hash_type(value)
+                            if hash_type not in ['empty', 'invalid', 'unknown']:
+                                all_hashes.append((value, hash_type))
+                                unique_hashes.add((value, hash_type))
+                elif file_type == 'txt':
+                    for line in f:
+                        potential_hashes = re.findall(r'(?:(?:md5|sha1|sha256|sha512)[:\s]+)?([0-9a-fA-F]{32,128})\b', line, re.IGNORECASE)
+                        for hash_str in potential_hashes:
+                            hash_type = detect_hash_type(hash_str)
+                            if hash_type not in ['empty', 'invalid', 'unknown']:
+                                all_hashes.append((hash_str, hash_type))
+                                unique_hashes.add((hash_str, hash_type))
+
+    # Calculate statistics
+    total_extracted = len(all_hashes)
+    unique_count = len(unique_hashes)
+    duplicates_removed = total_extracted - unique_count
+
+    # Filter by hash type if specified
+    if hash_type_filter:
+        unique_hashes = {h for h in unique_hashes if h[1] == hash_type_filter}
+
+    # Convert back to list for consistency
+    hash_list = list(unique_hashes)
+
+    # Display statistics
+    print(Fore.CYAN + f"[+] Total hashes extracted: {total_extracted}" + Fore.RESET)
+    print(Fore.CYAN + f"[+] Duplicates removed: {duplicates_removed}" + Fore.RESET)
+    print(Fore.CYAN + f"[+] Unique hashes to process: {len(hash_list)}" + Fore.RESET)
+
+    return hash_list
 
 def check_cache(hash_value, hash_type):
     """Check if a hash exists in the SQLite cache and return its results."""
@@ -212,7 +308,7 @@ def search_circl_hashlookup(hash_value, hash_type, verbose=False):
         return None
 
 def search_otx(hash_value, hash_type, verbose=False):
-    """Search for a hash in OTX and return results if found, else None."""
+    """Search for a hash in OTX and return the full response data if successful, else None. This returns any output from OTX without specific category checks."""
     if not OTX_API_KEY:
         print(Fore.YELLOW + "[+] OTX is not configured in config.json. Skipping OTX search." + Fore.RESET)
         return None
@@ -224,13 +320,9 @@ def search_otx(hash_value, hash_type, verbose=False):
         response = requests.get(url, headers=headers, timeout=10)
         if response.status_code == 200:
             data = response.json()
-            if data.get('pulse_info', {}).get('count', 0) > 0:
-                if verbose:
-                    print(Fore.GREEN + f"[+] OTX search done for {hash_value}" + Fare.RESET)
-                return data
             if verbose:
                 print(Fore.GREEN + f"[+] OTX search done for {hash_value}" + Fore.RESET)
-            return None
+            return data
         if verbose:
             print(Fore.GREEN + f"[+] OTX search done for {hash_value}" + Fore.RESET)
         return None
@@ -340,8 +432,11 @@ def search_virustotal(hash_value, hash_type, verbose=False, use_tor=False):
             print(Fore.RED + f"[+] Timeout searching VirusTotal for {hash_value}" + Fore.RESET)
         return None
     except Exception as e:
-        if verbose:
-            print(Fore.RED + f"[+] Error searching VirusTotal for {hash_value}: {e}" + Fore.RESET)
+        if "Missing dependencies for SOCKS support" in str(e):
+            print(Fore.RED + "[+] Error: Missing 'pysocks' module. Run 'pip install pysocks' or use --install." + Fore.RESET)
+        else:
+            if verbose:
+                print(Fore.RED + f"[+] Error searching VirusTotal for {hash_value}: {e}" + Fore.RESET)
         return None
 
 def otx_worker():
@@ -384,14 +479,14 @@ def start_otx_worker():
         otx_worker_started = True
 
 def start_vt_worker():
-    """Start the VirusTotal worker thread if it hasn't治 hasn't been started yet."""
+    """Start the VirusTotal worker thread if it hasn't been started yet."""
     global vt_worker_started
     if not vt_worker_started:
         threading.Thread(target=vt_worker, daemon=True).start()
         vt_worker_started = True
 
 def get_summary_table(results):
-    """Generate a summary table of results as a string."""
+    """Generate a summary table of results as a string using 'simple' format for better readability in text files and to avoid misalignment."""
     headers = ["Hash", "MISP", "Hashlookup", "OTX", "Kaspersky", "VirusTotal"]
     table = []
     for hash_value, data in results.items():
@@ -403,27 +498,36 @@ def get_summary_table(results):
             "Yes" if data.get('kaspersky') else "No",
             "Yes" if data.get('virustotal') else "No"
         ]
+        # Skip rows where hash is empty or all services are empty
+        if not row[0] or all(v == "" for v in row[1:]):
+            continue
         table.append(row)
-    return tabulate(table, headers=headers, tablefmt="grid")
+    return tabulate(table, headers=headers, tablefmt="simple", maxcolwidths=[64, None, None, None, None, None])
 
 def get_vt_results_table(hash_value, vt_results):
-    """Generate VirusTotal results table for a hash as a string."""
+    """Generate VirusTotal results table for a hash as a string, including total_votes, using 'simple' format to avoid misalignment."""
     if not vt_results or 'data' not in vt_results:
         return f"[+] No VirusTotal results found for hash {hash_value}"
     attributes = vt_results.get('data', {}).get('attributes', {})
     stats = attributes.get('last_analysis_stats', {})
-    tags = ', '.join(attributes.get('tags', []))
-    names = ', '.join(attributes.get('names', []))
+    votes = attributes.get('total_votes', {})
+    # Truncate long fields to improve readability
+    tags = attributes.get('tags', [])
+    names = attributes.get('names', [])
+    display_tags = ', '.join(tags[:10]) + (', ...' if len(tags) > 10 else '')
+    display_names = ', '.join(names[:10]) + (', ...' if len(names) > 10 else '')
     table = [
         ["Hash", hash_value],
         ["Malicious", stats.get('malicious', 0)],
         ["Suspicious", stats.get('suspicious', 0)],
         ["Harmless", stats.get('harmless', 0)],
         ["Undetected", stats.get('undetected', 0)],
-        ["Tags", tags],
-        ["Names", names]
+        ["Votes Malicious", votes.get('malicious', 0)],
+        ["Votes Harmless", votes.get('harmless', 0)],
+        ["Tags", display_tags],
+        ["Names", display_names]
     ]
-    return tabulate(table, headers=["Field", "Value"], tablefmt="grid")
+    return tabulate(table, headers=["Field", "Value"], tablefmt="simple", maxcolwidths=[None, 80])
 
 def calculate_estimated_time(mode, hash_list, services_to_search=None):
     """Calculate estimated time for processing hashes based on mode and services."""
@@ -537,7 +641,7 @@ def process_hashes(hash_list, verbose=False, mode='normal', use_tor=False):
     elif mode == 'extra':
         initial_services = ['misp', 'hashlookup', 'otx']
         for hash_value, hash_type in hash_list:
-            cached_results = cached_results = check_cache(hash_value, hash_type)
+            cached_results = check_cache(hash_value, hash_type)
             for service in initial_services:
                 if service not in cached_results or cached_results[service] is None:
                     if service == 'misp':
@@ -636,7 +740,7 @@ def process_hashes(hash_list, verbose=False, mode='normal', use_tor=False):
 if __name__ == "__main__":
     try:
         # Define command-line argument parser
-        parser = argparse.ArgumentParser(description="Check hashes against various threat intelligence services.")
+        parser = argparse.ArgumentParser(description="Check hashes against various threat intelligence services.\nUse --install to install required modules.")
         parser.add_argument('-directory', help="Path to directory containing files with hashes")
         parser.add_argument('-file_type', choices=['csv', 'txt'], help="Type of files to process (csv or txt)")
         parser.add_argument('-hash', help="A single hash to check directly")
@@ -649,6 +753,7 @@ if __name__ == "__main__":
         parser.add_argument('-q', '--quick', action='store_true', help="Quick mode: sequential check with VT confirmation")
         parser.add_argument('-e', '--extra', action='store_true', help="Extra mode: multi-phase with user prompts")
         parser.add_argument('-tor', action='store_true', help="Use Tor for VirusTotal requests in quick mode")
+        parser.add_argument('--hash_type', choices=['md5', 'sha1', 'sha256', 'sha512'], help="Filter hashes by type")
         args = parser.parse_args()
 
         # Validate mutually exclusive options
@@ -687,7 +792,7 @@ if __name__ == "__main__":
                 print(Fore.RED + f"[+] No cached results found for {hash_value}" + Fore.RESET)
             exit(0)
 
-        # Handle --vt_view switch to display VirusTotal results from cache
+        # Handle --vt_view switch to display VirusTotal results from cache, including total_votes
         if args.vt_view:
             hash_value = args.vt_view
             hash_type = detect_hash_type(hash_value)
@@ -716,7 +821,7 @@ if __name__ == "__main__":
                 exit(1)
             hash_list = [(hash_value, hash_type)]
         elif args.directory and args.file_type:
-            hash_list = extract_hashes_from_directory(args.directory, args.file_type)
+            hash_list = extract_hashes_from_directory(args.directory, args.file_type, args.hash_type)
             if not hash_list:
                 print(Fore.RED + "[+] No valid hashes found in the directory." + Fore.RESET)
                 exit(0)
@@ -773,8 +878,8 @@ if __name__ == "__main__":
         # Generate summary table string
         summary_str = get_summary_table(results)
 
-        # Write summary to output file
-        with open(args.output, 'w') as f:
+        # Write summary to output file with UTF-8 encoding
+        with open(args.output, 'w', encoding='utf-8') as f:
             f.write("[+] Summary of results:\n")
             f.write(summary_str + "\n")
 
@@ -783,22 +888,30 @@ if __name__ == "__main__":
             print(Fore.CYAN + "[+] Summary of results:" + Fore.RESET)
             print(summary_str)
 
-        # In quick mode, handle VirusTotal results for found hashes
+        # In quick mode, handle VirusTotal results for found hashes, but only display/save if malicious or suspicious > 0
         if mode == 'quick':
             found_hashes = [h for h in hash_list if any(results[h[0]].get(s) for s in ['misp', 'hashlookup', 'otx', 'kaspersky'])]
             for hash_value, hash_type in found_hashes:
                 vt_results = results[hash_value].get('virustotal')
                 if vt_results:
-                    vt_str = get_vt_results_table(hash_value, vt_results)
-                    with open(args.output, 'a') as f:
-                        f.write("\n[+] VirusTotal Results:\n")
-                        f.write(vt_str + "\n")
-                    if args.verbose:
-                        print(Fore.CYAN + f"[+] VirusTotal Results for {hash_value}:" + Fore.RESET)
-                        print(vt_str)
+                    stats = vt_results.get('data', {}).get('attributes', {}).get('last_analysis_stats', {})
+                    votes = vt_results.get('data', {}).get('attributes', {}).get('total_votes', {})
+                    # Check conditions: malicious in votes > 0 or malicious/suspicious in stats > 0
+                    if votes.get('malicious', 0) > 0 or stats.get('malicious', 0) > 0 or stats.get('suspicious', 0) > 0:
+                        vt_str = get_vt_results_table(hash_value, vt_results)
+                        with open(args.output, 'a', encoding='utf-8') as f:
+                            f.write("\n[+] VirusTotal Results:\n")
+                            f.write(vt_str + "\n")
+                        if args.verbose:
+                            print(Fore.CYAN + f"[+] VirusTotal Results for {hash_value}:" + Fore.RESET)
+                            print(vt_str)
+                    else:
+                        no_vt_str = f"[+] Skipping VirusTotal results for {hash_value} (no malicious/suspicious detections)"
+                        if args.verbose:
+                            print(Fore.YELLOW + no_vt_str + Fore.RESET)
                 else:
                     no_vt_str = f"[+] No VirusTotal results for {hash_value}"
-                    with open(args.output, 'a') as f:
+                    with open(args.output, 'a', encoding='utf-8') as f:
                         f.write(no_vt_str + "\n")
                     if args.verbose:
                         print(Fore.YELLOW + no_vt_str + Fore.RESET)
