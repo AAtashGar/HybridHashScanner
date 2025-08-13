@@ -1,108 +1,245 @@
 # HybridHashScanner
 
-HybridHashScanner is a powerful command-line tool designed for security researchers to analyze file hashes against multiple threat intelligence platforms, including MISP, CIRCL Hashlookup, OTX, Kaspersky, and VirusTotal. It offers flexible input options, caching for performance, multithreaded processing, and optional Tor support for anonymity.
+HybridHashScanner is a comprehensive command-line tool developed for security researchers, threat hunters, and cybersecurity analysts. It enables the efficient analysis of file hashes (MD5, SHA1, SHA256, SHA512) against multiple threat intelligence platforms, including MISP, CIRCL Hashlookup, AlienVault OTX, Kaspersky OpenTIP, and VirusTotal. The tool supports processing single hashes or batches from directories containing CSV or TXT files, with automatic hash type detection, duplicate removal, and encoding handling for robustness.
+
+Key capabilities include caching results in an SQLite database to avoid redundant queries, multithreaded workers for high-volume processing with built-in rate limit compliance, optional Tor integration for anonymous VirusTotal queries, and three operational modes (normal, quick, extra) to suit different workflows. Results are summarized in tabular format in the terminal and saved to a text file, with verbose logging for detailed insights.
+
+The tool is licensed under the MIT License and emphasizes privacy, efficiency, and extensibility.
 
 ## Features
 
-- Analyze single hashes or process directories of CSV/TXT files
-- Supports MD5, SHA1, SHA256, and SHA512 hash types
-- Integrates with MISP, CIRCL Hashlookup, OTX, Kaspersky, and VirusTotal
-- Caches results in an SQLite database to optimize repeated queries
-- Multithreaded workers for OTX and VirusTotal with rate limit handling
-- Optional Tor integration for anonymous VirusTotal lookups
-- Multiple modes: normal, quick, and extra with user prompts
-- Outputs results in JSON and displays summaries in the terminal
+- **Hash Extraction and Validation**: Automatically detects and validates hash types from input files or direct input, handling duplicates and various encodings (e.g., UTF-8, Latin-1) using chardet.
+- **Multi-Platform Integration**: Queries MISP for attributes, CIRCL Hashlookup for known files, OTX for pulses and analysis, Kaspersky OpenTIP for threat status, and VirusTotal for detailed scans and votes.
+- **Caching System**: Uses SQLite to store and retrieve results, reducing API calls and speeding up repeated analyses.
+- **Multithreading with Rate Limits**: Dedicated worker threads for OTX (10,000 requests/hour) and VirusTotal (4 requests/minute), with automatic delays to prevent throttling.
+- **Tor Anonymity**: Optional Tor routing for VirusTotal in quick mode, with automatic bootstrapping and cleanup.
+- **Operational Modes**:
+  - **Normal Mode**: Comprehensive checks across selected services.
+  - **Quick Mode**: Sequential scanning with early stops on findings, followed by VirusTotal confirmation.
+  - **Extra Mode**: Phased approach with user prompts for deeper investigation.
+- **Verbose Logging and Output**: Colored terminal output with progress indicators, estimated completion times, and tabulated summaries. Results saved to a customizable text file.
+- **View Cached Results**: Options to inspect full or VirusTotal-specific cached data without new queries.
+- **Flexible Input**: Single hash, directory of CSV/TXT files, with optional hash type filtering.
+- **Encoding Detection**: Handles file encodings dynamically to prevent decoding errors.
 
 ## Installation
 
 ### Prerequisites
 
-- **Python 3.x**: Required to run the script.
-- **Tor**: Optional, for anonymous VirusTotal queries.
+- **Python 3.12.3 or higher**: The tool is built on Python and requires this version for compatibility with libraries.
+- **Tor (Optional)**: For anonymous VirusTotal queries in quick mode. Install Tor from the official website and specify its path in `config.json`.
 
-### Dependencies
+### Automated Dependency Installation
 
-Install the required Python libraries using pip:
+The tool includes a built-in installation mechanism for required Python modules. Before running the tool for the first time, use the `--install` switch to automatically check and install missing dependencies (pymisp, requests, tabulate, pyfiglet, colorama, stem, chardet, pysocks). This process uses pip and handles any ImportErrors gracefully.
+
+Run the following command:
 
 ```
-pip install pymisp requests tabulate pyfiglet colorama stem
+python3 /opt/HybridHashScanner/HybridHashScanner.py --install
 ```
 
-### Steps
+Example Output:
 
-1. Clone the repository:
-  
-  ```
-  git clone https://github.com/AAtashGar/HybridHashScanner.git
-  cd HybridHashScanner
-  ```
-  
-2. Install the dependencies as shown above.
-3. (Optional) Install Tor and ensure it’s accessible in your PATH or specify its path in `config.json`.
+```
+Installing missing modules...
+Collecting pymisp
+  Downloading pymisp-2.4.123-py3-none-any.whl (123 kB)
+Successfully installed pymisp-2.4.123
+All modules installed successfully.
+```
+
+If all modules are already installed:
+
+```
+All required modules are already installed.
+```
+
+After installation, clone or download the repository:
+
+```
+git clone https://github.com/AAtashGar/HybridHashScanner.git
+cd HybridHashScanner
+```
 
 ## Usage
 
-Run the tool with:
+HybridHashScanner is invoked via command-line arguments. Below is the full help output generated by running `python3 HybridHashScanner.py -h`:
 
 ```
-python HybridHashScanner.py [options]
+usage: HybridHashScanner.py [-h] [-directory DIRECTORY] [-file_type {csv,txt}] [-hash HASH] [-output OUTPUT] [-v] [-service {misp,hashlookup,otx,kaspersky,virustotal,all}]
+                            [--view VIEW] [--vt_view VT_VIEW] [-q] [-e] [-tor] [--hash_type {md5,sha1,sha256,sha512}]
+
+Check hashes against various threat intelligence services.
+Use --install to install required modules.
+
+options:
+  -h, --help            show this help message and exit
+  -directory DIRECTORY  Path to directory containing files with hashes
+  -file_type {csv,txt}  Type of files to process (csv or txt)
+  -hash HASH            A single hash to check directly
+  -output OUTPUT        Output text file for summary and VT results (default: results.txt)
+  -v, --verbose         Enable verbose output
+  -service {misp,hashlookup,otx,kaspersky,virustotal,all}
+                        Service to search the hash in (default: all)
+  --view VIEW           View full details of a specific hash from cache
+  --vt_view VT_VIEW     View only VirusTotal results of a specific hash from cache
+  -q, --quick           Quick mode: sequential check with VT confirmation
+  -e, --extra           Extra mode: multi-phase with user prompts
+  -tor                  Use Tor for VirusTotal requests in quick mode
+  --hash_type {md5,sha1,sha256,sha512}
+                        Filter hashes by type
 ```
-
-### Command-Line Options
-
-| Option | Description |
-| --- | --- |
-| `-directory <path>` | Path to a directory containing hash files (CSV or TXT) |
-| `-file_type <type>` | Type of files to process: `csv` or `txt` (required with `-directory`) |
-| `-hash <hash>` | Single hash to analyze directly |
-| `-output <file>` | Output JSON file path (default: `results.json`) |
-| `-v, --verbose` | Enable verbose output for detailed logging |
-| `-service <name>` | Service to query: `misp`, `hashlookup`, `otx`, `kaspersky`, `virustotal`, or `all` (default: `all`) |
-| `--view <hash>` | View cached results for a specific hash |
-| `--vt_view <hash>` | View only VirusTotal cached results for a specific hash |
-| `--vt_confirm` | Confirm found hashes in VirusTotal (used with normal/extra modes) |
-| `-q, --quick` | Quick mode: sequential checks with VirusTotal confirmation via Tor |
-| `-e, --extra` | Extra mode: multi-phase checks with user prompts |
-| `-tor` | Use Tor for VirusTotal requests in Quick mode (optional) |
 
 ### Examples
 
-1. **Analyze a Single Hash:**
-  
-  ```
-  python HybridHashScanner.py -hash 0123456789abcdef0123456789abcdef
-  ```
-  
-  Checks the hash against all configured services and saves results to `results.json`.
-  
-2. **Process a Directory of CSV Files:**
-  
-  ```
-  python HybridHashScanner.py -directory ./hashes -file_type csv
-  ```
-  
-  Processes all CSV files in the `hashes` directory.
-  
-3. **Quick Mode with TXT Files and Tor:**
-  
-  ```
-  python HybridHashScanner.py -directory ./hashes -file_type txt -q -tor
-  ```
-  
-  Sequentially checks hashes and confirms findings in VirusTotal via Tor.
-  
-4. **View Cached Results:**
-  
-  ```
-  python HybridHashScanner.py --view 0123456789abcdef0123456789abcdef
-  ```
-  
-  Displays cached results for the specified hash.
-  
+Here are several usage examples with commands, explanations, and sample outputs based on real tool behavior (assuming a configured `config.json` and sample hashes in files).
+
+1. **Install Dependencies (If Needed)**:
+   
+   ```
+   python3 /opt/HybridHashScanner/HybridHashScanner.py --install
+   ```
+   
+   Output:
+   
+   ```
+   Installing missing modules...
+   [pip installation logs...]
+   All modules installed successfully.
+   ```
+
+2. **Analyze a Single Hash in Normal Mode with Verbose Output**:
+   
+   ```
+   python3 /opt/HybridHashScanner/HybridHashScanner.py -hash d41d8cd98f00b204e9800998ecf8427e -v -service all
+   ```
+   
+   Explanation: Checks the MD5 hash against all services, with verbose logging.
+   Output:
+   
+   ```
+   [ASCII Logo and Info Box]
+   [+] Estimated time to complete: 0 hours 0 minutes 1 seconds
+   [+] Processing 1 hash(es) in normal mode...
+   [+] Searching in MISP for d41d8cd98f00b204e9800998ecf8427e...
+   [+] MISP search done for d41d8cd98f00b204e9800998ecf8427e
+   [+] Searching in CIRCL Hashlookup for d41d8cd98f00b204e9800998ecf8427e...
+   [+] CIRCL Hashlookup search done for d41d8cd98f00b204e9800998ecf8427e
+   [+] Searching in OTX for d41d8cd98f00b204e9800998ecf8427e...
+   [+] OTX search done for d41d8cd98f00b204e9800998ecf8427e
+   [+] Searching in Kaspersky for d41d8cd98f00b204e9800998ecf8427e...
+   [+] Kaspersky search done for d41d8cd98f00b204e9800998ecf8427e
+   [+] Searching in VirusTotal for d41d8cd98f00b204e9800998ecf8427e...
+   [+] VirusTotal search done for d41d8cd98f00b204e9800998ecf8427e
+   [+] Summary of results:
+   +------------------+------+------------+-----+-----------+------------+
+   | Hash             | MISP | Hashlookup | OTX | Kaspersky | VirusTotal |
+   +------------------+------+------------+-----+-----------+------------+
+   | d41d8cd98f00b204 | No   | Yes        | No  | No        | Yes        |
+   +------------------+------+------------+-----+-----------+------------+
+   [+] Summary and VirusTotal results saved to 'results.txt'.
+   [+] Results cached in 'cache.db'.
+   ```
+
+3. **Process Directory of CSV Files in Quick Mode with Verbose and Tor**:
+   
+   ```
+   python3 /opt/HybridHashScanner/HybridHashScanner.py -directory /home/test/ -file_type csv -q -v -tor
+   ```
+   
+   Explanation: Extracts hashes from CSV files in the directory, runs quick mode (sequential checks with VT confirmation via Tor), verbose output enabled.
+   Output (assuming 3 hashes in files, one found in OTX):
+   
+   ```
+   [ASCII Logo and Info Box]
+   [+] Total hashes extracted: 5
+   [+] Duplicates removed: 2
+   [+] Unique hashes to process: 3
+   [+] Estimated time to complete: 0 hours 0 minutes 45 seconds
+   [+] Processing 3 hash(es) in quick mode...
+   [+] Searching in MISP for abc123...
+   [+] MISP search done for abc123
+   [+] Searching in CIRCL Hashlookup for def456...
+   [+] CIRCL Hashlookup search done for def456
+   [+] Searching in OTX for ghi789...
+   [+] OTX search done for ghi789 (relevant data found)
+   [+] Quick mode results:
+   [+] Found in misp: 0
+   [+] Found in hashlookup: 0
+   [+] Found in otx: 1
+   [+] Found in kaspersky: 0
+   [+] Not found: 2
+   [+] Starting Tor...
+   [+] Tor is fully bootstrapped!
+   [+] Searching in VirusTotal for ghi789...
+   [+] VirusTotal search done for ghi789
+   [+] Tor stopped.
+   [+] Summary of results:
+   +----------+------+------------+-----+-----------+------------+
+   | Hash     | MISP | Hashlookup | OTX | Kaspersky | VirusTotal |
+   +----------+------+------------+-----+-----------+------------+
+   | abc123…  | No   | No         | No  | No        | No         |
+   | def456…  | No   | No         | No  | No        | No         |
+   | ghi789…  | No   | No         | Yes | No        | Yes        |
+   +----------+------+------------+-----+-----------+------------+
+   [+] VirusTotal Results for ghi789…:
+   [Tabulated VT stats, e.g., Malicious: 5, Suspicious: 0, etc.]
+   [+] Summary and VirusTotal results saved to 'results.txt'.
+   [+] Results cached in 'cache.db'.
+   ```
+
+4. **Extra Mode on TXT Files with Hash Type Filter**:
+   
+   ```
+   python3 /opt/HybridHashScanner/HybridHashScanner.py -directory /home/test/ -file_type txt -e --hash_type sha256
+   ```
+   
+   Explanation: Processes only SHA256 hashes from TXT files in extra mode (phased with prompts).
+   Output (user inputs "yes" to prompts):
+   
+   ```
+   [ASCII Logo and Info Box]
+   [+] Total hashes extracted: 4
+   [+] Duplicates removed: 1
+   [+] Unique hashes to process: 3 (filtered to sha256)
+   [+] Estimated time to complete: 0 hours 1 minutes 15 seconds
+   [+] Processing 3 hash(es) in extra mode...
+   [+] Processed 3 hashes in phase 1:
+   [+] Found in MISP: 1
+   [+] Found in CIRCL Hashlookup: 0
+   [+] Found in OTX: 1
+   [+] Not found in any service (phase 1): 1
+   [+] Do you want to check the 1 not found hashes in OpenTIP Kaspersky? (yes/no): yes
+   [+] Found in Kaspersky: 0
+   [+] Not found in Kaspersky: 1
+   [+] Do you want to check the 1 not found hashes in VirusTotal? (yes/no): yes
+   [+] Summary of results:
+   [Tabulated summary]
+   [+] Summary and VirusTotal results saved to 'results.txt'.
+   [+] Results cached in 'cache.db'.
+   ```
+
+5. **View Cached VirusTotal Results**:
+   
+   ```
+   python3 /opt/HybridHashScanner/HybridHashScanner.py --vt_view d41d8cd98f00b204e9800998ecf8427e
+   ```
+   
+   Output:
+   
+   ```
+   [+] VirusTotal Results:
+   +------------------+-----------+-------------+------------+-----------+---------+------------+
+   | Hash             | Malicious | Suspicious | Undetected | Harmless  | Failure | Total Votes|
+   +------------------+-----------+-------------+------------+-----------+---------+------------+
+   | d41d8cd98f00b204 | 0         | 0           | 70         | 5         | 0       | 0          |
+   +------------------+-----------+-------------+------------+-----------+---------+------------+
+   ```
 
 ## Configuration
 
-Before running the tool, you must create and configure the `config.json` file in the project directory. This file should contain the necessary API keys and settings for the services you wish to use. Here is an example structure:
+Create a `config.json` file in the project root with your API keys and settings. Example:
 
 ```json
 {
@@ -112,19 +249,13 @@ Before running the tool, you must create and configure the `config.json` file in
     "vt_keys": ["your_vt_api_key1", "your_vt_api_key2"],
     "kaspersky_key": "your_kaspersky_api_key",
     "cache_db": "cache.db",
-    "tor_path": "/path/to/tor"
+    "tor_path": "/usr/bin/tor"
 }
 ```
 
-- **MISP**: Provide the URL and API key.
-- **OTX**: Provide the API key.
-- **VirusTotal**: Provide one or more API keys (comma-separated).
-- **Kaspersky**: Provide the API key for OpenTIP.
-- **Cache DB**: Path to the SQLite cache database (default: `cache.db`).
-- **Tor Path**: Optional path to the Tor executable.
-
-If a service is not configured (i.e., its key is missing or empty), the tool will display a notification and skip that service during execution.
-
-## Wiki
+- Obtain keys by creating accounts on each platform (MISP requires a local instance setup first).
+- If a service is unconfigured, it will be skipped with a warning.
 
 For detailed technical documentation, code breakdowns, and advanced usage, see the [Wiki](https://github.com/AAtashGar/HybridHashScanner/wiki/HybridHashScanner).
+
+
