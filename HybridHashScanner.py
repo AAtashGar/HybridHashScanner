@@ -308,7 +308,7 @@ def search_circl_hashlookup(hash_value, hash_type, verbose=False):
         return None
 
 def search_otx(hash_value, hash_type, verbose=False):
-    """Search for a hash in OTX and return the full response data if successful, else None. This returns any output from OTX without specific category checks."""
+    """Search for a hash in OTX and return the full response data only if relevant (pulses, AV detection, IDS detection, or YARA rules), else None."""
     if not OTX_API_KEY:
         print(Fore.YELLOW + "[+] OTX is not configured in config.json. Skipping OTX search." + Fore.RESET)
         return None
@@ -320,9 +320,30 @@ def search_otx(hash_value, hash_type, verbose=False):
         response = requests.get(url, headers=headers, timeout=10)
         if response.status_code == 200:
             data = response.json()
-            if verbose:
-                print(Fore.GREEN + f"[+] OTX search done for {hash_value}" + Fore.RESET)
-            return data
+            relevant = False
+            # Check for pulses
+            if data.get('pulse_info', {}).get('count', 0) > 0:
+                relevant = True
+            # Check for analysis sections
+            if 'analysis' in data:
+                plugins = data['analysis'].get('plugins', {})
+                # AV detection
+                if plugins.get('av', {}).get('results'):
+                    relevant = True
+                # IDS detection (suricata or snort as examples)
+                if plugins.get('suricata') or plugins.get('snort'):
+                    relevant = True
+                # YARA rules
+                if plugins.get('yara'):
+                    relevant = True
+            if relevant:
+                if verbose:
+                    print(Fore.GREEN + f"[+] OTX search done for {hash_value} (relevant data found)" + Fore.RESET)
+                return data
+            else:
+                if verbose:
+                    print(Fore.GREEN + f"[+] OTX search done for {hash_value} (no relevant data)" + Fore.RESET)
+                return None
         if verbose:
             print(Fore.GREEN + f"[+] OTX search done for {hash_value}" + Fore.RESET)
         return None
@@ -568,7 +589,20 @@ def process_hashes(hash_list, verbose=False, mode='normal', use_tor=False):
         found_counts = {'cache': 0, 'misp': 0, 'hashlookup': 0, 'otx': 0, 'kaspersky': 0}
         found_hashes = []
         for hash_value, hash_type in hash_list:
+            if verbose:
+                print(Fore.BLUE + f"[+] Checking cache for {hash_value}..." + Fore.RESET)
             cached_results = check_cache(hash_value, hash_type)
+            # Check if any service has cached result
+            if any(cached_results.get(service) for service in ['misp', 'hashlookup', 'otx', 'kaspersky']):
+                found_counts['cache'] += 1
+                found = True
+                found_hashes.append((hash_value, hash_type))
+                if verbose:
+                    print(Fore.GREEN + f"[+] Cache check done for {hash_value} (hit)" + Fore.RESET)
+                continue
+            else:
+                if verbose:
+                    print(Fore.GREEN + f"[+] Cache check done for {hash_value} (miss)" + Fore.RESET)
             found = False
             for service in ['misp', 'hashlookup', 'otx', 'kaspersky']:
                 if service in cached_results and cached_results[service] is not None:
