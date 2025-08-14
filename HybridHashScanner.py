@@ -1,13 +1,13 @@
 # Install required modules 
-# python.exe .\HybridHashScanner.py --install
+# python3 .\HybridHashScanner.py --install
 
 # Run IN Quick Mode Without verbose 
 # -tor is Optional 
-# python.exe .\HybridHashScanner.py  -directory Your Directory -file_type csv -q -tor
+# python3 .\HybridHashScanner.py  -directory Your Directory -file_type csv -q -tor
 
 # Run IN Quick Mode With verbose
 # -tor is Optional
-# python.exe .\HybridHashScanner.py  -directory Your Directory -file_type csv -q -v -tor
+# python3 .\HybridHashScanner.py  -directory Your Directory -file_type csv -q -v -tor
 
 import sys
 import subprocess
